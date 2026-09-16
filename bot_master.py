@@ -9,21 +9,17 @@ import numpy as np
 
 # --- CONFIGURACIÓN GENERAL ---
 EMAIL_DESTINO = "hugo5764@gmail.com"
-EMAIL_ORIGEN = "tu_correo@gmail.com"  # Reemplaza con tu correo remitente de Gmail
-EMAIL_PASSWORD = "tu_contraseña_de_aplicacion"  # Contraseña de aplicación de 16 dígitos de Google
+EMAIL_ORIGEN = "hugo5764@gmail.com"
+EMAIL_PASSWORD = "pjifcxxguoqozawv"
 
 TZ_UTC4 = pytz.timezone('America/Caracas')
 
-# 10 Pares de divisas oficiales principales
 PARES_DIVISAS = [
-    "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", 
+    "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
     "NZDUSD", "EURGBP", "EURJPY", "GBPJPY", "AUDJPY"
 ]
 
-# Control de Cooldown (Anti-spam por par)
 cooldown_pares = {par: 0 for par in PARES_DIVISAS}
-
-def enviar_alerta_correo(asunto, mensaje):
     """Envía correo con sistema de reintentos para garantizar entrega 24/7"""
     intentos = 3
     for intento in range(intentos):
@@ -133,15 +129,15 @@ def ciclo_principal_247():
                     # df = calcular_cinco_estrategias(df)
                     # resultado = evaluar_vela_m5(df)
                     
-                    resultado = 'VALIDA' # Simulación por defecto
+                resultado = 'SENAL_FALSA'
                     
                     if resultado == 'SENAL_FALSA':
                         asunto = f"⚠️ ALERTA DE INVALIDACIÓN: {par} (M5)"
                         cuerpo = (
-                            f"Par: {par}\n"
-                            f"Hora UTC-4: {ahora.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                            "Motivo: La vela M5 presentó indecisión o fallo en la confluencia de las 5 estrategias.\n"
-                            "ACCIÓN: Descartar operación."
+    f"Par: {par}\n"
+    f"Hora UTC-4: {ahora.strftime('%Y-%m-%d %H:%M:%S')}\n"
+    "Motivo: La vela M5 presentó indecisión o fallo en la confluencia de las estrategias.\n"
+    "ACCIÓN: Descartar operación."
                         )
                         enviar_alerta_correo(asunto, cuerpo)
                         cooldown_pares[par] = time.time()
