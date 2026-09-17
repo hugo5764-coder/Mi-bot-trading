@@ -83,55 +83,47 @@ def calcular_indicadores(df):
     df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
     return df
 
-def vela_verde_sin_dudas(row):
+def analizar_vela(row):
+    """Devuelve 'COMPRA', 'VENTA' o None"""
     rango = row['high'] - row['low']
     if rango <= 0:
-        return False
+        return None
     cuerpo = abs(row['close'] - row['open'])
     prop_cuerpo = cuerpo / rango
-    # Cuerpo >= 85% del rango (sin mechas grandes)
-    if prop_cuerpo < 0.85:
-        return False
-    # Debe ser verde
-    if row['close'] <= row['open']:
-        return False
-    # Cierre en el 90% superior del rango
+    
+    # Cuerpo mínimo 40%
+    if prop_cuerpo < 0.40:
+        return None
+    
     posicion_cierre = (row['close'] - row['low']) / rango
-    if posicion_cierre < 0.90:
-        return False
-    # Confluencia alcista (4 indicadores)
-    if not (row['EMA_9'] > row['EMA_21']):
-        return False
-    if not (row['RSI'] > 55 and row['RSI'] < 80):
-        return False
-    if not (row['close'] > row['BB_Mid']):
-        return False
-    if not (row['MACD'] > row['MACD_Signal'] and row['MACD'] > 0):
-        return False
-    return True
-
-def vela_roja_sin_dudas(row):
-    rango = row['high'] - row['low']
-    if rango <= 0:
-        return False
-    cuerpo = abs(row['close'] - row['open'])
-    prop_cuerpo = cuerpo / rango
-    if prop_cuerpo < 0.85:
-        return False
-    if row['close'] >= row['open']:
-        return False
-    posicion_cierre = (row['close'] - row['low']) / rango
-    if posicion_cierre > 0.10:
-        return False
-    if not (row['EMA_9'] < row['EMA_21']):
-        return False
-    if not (row['RSI'] < 45 and row['RSI'] > 20):
-        return False
-    if not (row['close'] < row['BB_Mid']):
-        return False
-    if not (row['MACD'] < row['MACD_Signal'] and row['MACD'] < 0):
-        return False
-    return True
+    
+    # VELA VERDE
+    if row['close'] > row['open']:
+        if posicion_cierre < 0.60:
+            return None
+        puntos = 0
+        if row['EMA_9'] > row['EMA_21']: puntos += 1
+        if row['RSI'] > 50: puntos += 1
+        if row['close'] > row['BB_Mid']: puntos += 1
+        if row['MACD'] > row['MACD_Signal']: puntos += 1
+        if puntos >= 2:
+            return 'COMPRA'
+        return None
+    
+    # VELA ROJA
+    if row['close'] < row['open']:
+        if posicion_cierre > 0.40:
+            return None
+        puntos = 0
+        if row['EMA_9'] < row['EMA_21']: puntos += 1
+        if row['RSI'] < 50: puntos += 1
+        if row['close'] < row['BB_Mid']: puntos += 1
+        if row['MACD'] < row['MACD_Signal']: puntos += 1
+        if puntos >= 2:
+            return 'VENTA'
+        return None
+    
+    return None
 
 def ciclo_principal_247():
     global ultima_preventiva_ts, ultima_correccion_ts
@@ -142,33 +134,36 @@ def ciclo_principal_247():
             minuto = ahora.minute
             ahora_ts = time.time()
 
-            # 🟢🔴 PREVENTIVA: 2 min antes del cierre (minuto 3 u 8)
+            # PREVENTIVA: 2 min antes del cierre (minuto 3 u 8)
             if (minuto % 5 in [3, 8]) and (ahora_ts - ultima_preventiva_ts > 240):
                 ultima_preventiva_ts = ahora_ts
                 print(f"[{ahora.strftime('%H:%M:%S')}] Analizando velas en formación...")
+                señales = 0
                 for par in PARES_DIVISAS:
                     df = obtener_vela_m5_broker(par)
                     if df is None:
                         continue
                     df = calcular_indicadores(df)
                     vela_actual = df.iloc[-1]
+                    señal = analizar_vela(vela_actual)
 
-                    if vela_verde_sin_dudas(vela_actual):
+                    if señal == 'COMPRA':
+                        señales += 1
                         predicciones[par] = 'COMPRA'
                         enviar_alerta_correo(
                             f"🟢 {par} prev 2min",
-                            f"🟢 {par} prev 2min - Preparar COMPRA\n"
-                            f"Cuerpo fuerte, sin dudas, dirección arriba."
+                            f"🟢 {par} prev 2min - Preparar COMPRA"
                         )
-                    elif vela_roja_sin_dudas(vela_actual):
+                    elif señal == 'VENTA':
+                        señales += 1
                         predicciones[par] = 'VENTA'
                         enviar_alerta_correo(
                             f"🔴 {par} prev 2min",
-                            f"🔴 {par} prev 2min - Preparar VENTA\n"
-                            f"Cuerpo fuerte, sin dudas, dirección abajo."
+                            f"🔴 {par} prev 2min - Preparar VENTA"
                         )
+                print(f"[{ahora.strftime('%H:%M:%S')}] Señales enviadas: {señales}")
 
-            # ❌ CORRECCIÓN: al cierre exacto (minuto 0 o 5)
+            # CORRECCIÓN: al cierre exacto (minuto 0 o 5)
             if (minuto % 5 in [0, 5]) and (ahora_ts - ultima_correccion_ts > 240):
                 ultima_correccion_ts = ahora_ts
                 now_ms = int(time.time() * 1000)
@@ -185,18 +180,12 @@ def ciclo_principal_247():
                         del predicciones[par]
                         continue
                     vela_cerrada = cerradas.iloc[-1]
+                    señal_cierre = analizar_vela(vela_cerrada)
 
-                    era_valida = False
-                    if direccion == 'COMPRA':
-                        era_valida = vela_verde_sin_dudas(vela_cerrada)
-                    elif direccion == 'VENTA':
-                        era_valida = vela_roja_sin_dudas(vela_cerrada)
-
-                    if not era_valida:
+                    if señal_cierre != direccion:
                         enviar_alerta_correo(
                             f"❌ {par} FALSA",
-                            f"❌ {par} FALSA - NO OPERAR\n"
-                            f"La vela perdió fuerza o mostró dudas al cierre."
+                            f"❌ {par} FALSA - NO OPERAR"
                         )
                     del predicciones[par]
 
