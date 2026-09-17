@@ -17,36 +17,35 @@ PARES_DIVISAS = [
     "NZDUSD", "EURGBP", "EURJPY", "GBPJPY", "AUDJPY"
 ]
 
-cooldown_pares = {par: 0 for par in PARES_DIVISAS}
+predicciones = {}
+ultima_preventiva_ts = 0
+ultima_correccion_ts = 0
 
 def obtener_vela_m5_broker(par):
     simbolo_binance = par.replace("USD", "USDT")
     url = f"https://api.binance.com/api/v3/klines?symbol={simbolo_binance}&interval=5m&limit=100"
     try:
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            datos = response.json()
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            datos = r.json()
             df = pd.DataFrame(datos, columns=[
                 'timestamp', 'open', 'high', 'low', 'close', 'volume',
                 'close_time', 'quote_asset_volume', 'number_of_trades',
                 'taker_buy_base', 'taker_buy_quote', 'ignore'
             ])
-            df['open'] = df['open'].astype(float)
-            df['high'] = df['high'].astype(float)
-            df['low'] = df['low'].astype(float)
-            df['close'] = df['close'].astype(float)
-            df['volume'] = df['volume'].astype(float)
+            for c in ['open', 'high', 'low', 'close', 'volume']:
+                df[c] = df[c].astype(float)
+            df['timestamp'] = df['timestamp'].astype(np.int64)
+            df['close_time'] = df['close_time'].astype(np.int64)
             return df
-        else:
-            print(f"Binance no tiene el par {simbolo_binance} o hubo un error: {response.status_code}")
-            return None
+        return None
     except Exception as e:
-        print(f"Error de conexión con Binance para {simbolo_binance}: {e}")
+        print(f"Error: {e}")
         return None
 
 def enviar_alerta_correo(asunto, mensaje):
     try:
-        response = requests.post(
+        r = requests.post(
             "https://api.resend.com/emails",
             headers={
                 "Authorization": f"Bearer {RESEND_API_KEY}",
@@ -59,14 +58,14 @@ def enviar_alerta_correo(asunto, mensaje):
                 "text": mensaje,
             },
         )
-        if response.status_code == 200:
-            print(f"[{datetime.now(TZ_UTC4).strftime('%H:%M:%S')}] Alerta enviada a {EMAIL_DESTINO}")
+        if r.status_code == 200:
+            print(f"[{datetime.now(TZ_UTC4).strftime('%H:%M:%S')}] Enviado: {asunto}")
         else:
-            print(f"Error al enviar con Resend: {response.status_code} - {response.text}")
+            print(f"Error Resend: {r.status_code} - {r.text}")
     except Exception as e:
-        print(f"Error de conexión con Resend: {e}")
+        print(f"Error conexión Resend: {e}")
 
-def calcular_cinco_estrategias(df):
+def calcular_indicadores(df):
     df['EMA_9'] = df['close'].ewm(span=9, adjust=False).mean()
     df['EMA_21'] = df['close'].ewm(span=21, adjust=False).mean()
     delta = df['close'].diff()
@@ -82,66 +81,128 @@ def calcular_cinco_estrategias(df):
     exp2 = df['close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = exp1 - exp2
     df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    df['Cuerpo'] = abs(df['close'] - df['open'])
-    df['Rango_Total'] = (df['high'] - df['low']).replace(0, 0.00001)
-    df['Proporcion_Cuerpo'] = df['Cuerpo'] / df['Rango_Total']
     return df
 
-def evaluar_vela_m5(df):
-    ultima = df.iloc[-1]
-    if ultima['Proporcion_Cuerpo'] < 0.80:
-        return 'SENAL_FALSA'
-    alcista = (
-        (ultima['close'] > ultima['open']) and
-        (ultima['EMA_9'] > ultima['EMA_21']) and
-        (ultima['RSI'] > 55) and
-        (ultima['close'] > ultima['BB_Mid']) and
-        (ultima['MACD'] > ultima['MACD_Signal']) and
-        (ultima['MACD'] > 0)
-    )
-    bajista = (
-        (ultima['close'] < ultima['open']) and
-        (ultima['EMA_9'] < ultima['EMA_21']) and
-        (ultima['RSI'] < 45) and
-        (ultima['close'] < ultima['BB_Mid']) and
-        (ultima['MACD'] < ultima['MACD_Signal']) and
-        (ultima['MACD'] < 0)
-    )
-    if alcista or bajista:
-        return 'VALIDA'
-    else:
-        return 'SENAL_FALSA'
+def vela_verde_sin_dudas(row):
+    rango = row['high'] - row['low']
+    if rango <= 0:
+        return False
+    cuerpo = abs(row['close'] - row['open'])
+    prop_cuerpo = cuerpo / rango
+    # Cuerpo >= 85% del rango (sin mechas grandes)
+    if prop_cuerpo < 0.85:
+        return False
+    # Debe ser verde
+    if row['close'] <= row['open']:
+        return False
+    # Cierre en el 90% superior del rango
+    posicion_cierre = (row['close'] - row['low']) / rango
+    if posicion_cierre < 0.90:
+        return False
+    # Confluencia alcista (4 indicadores)
+    if not (row['EMA_9'] > row['EMA_21']):
+        return False
+    if not (row['RSI'] > 55 and row['RSI'] < 80):
+        return False
+    if not (row['close'] > row['BB_Mid']):
+        return False
+    if not (row['MACD'] > row['MACD_Signal'] and row['MACD'] > 0):
+        return False
+    return True
+
+def vela_roja_sin_dudas(row):
+    rango = row['high'] - row['low']
+    if rango <= 0:
+        return False
+    cuerpo = abs(row['close'] - row['open'])
+    prop_cuerpo = cuerpo / rango
+    if prop_cuerpo < 0.85:
+        return False
+    if row['close'] >= row['open']:
+        return False
+    posicion_cierre = (row['close'] - row['low']) / rango
+    if posicion_cierre > 0.10:
+        return False
+    if not (row['EMA_9'] < row['EMA_21']):
+        return False
+    if not (row['RSI'] < 45 and row['RSI'] > 20):
+        return False
+    if not (row['close'] < row['BB_Mid']):
+        return False
+    if not (row['MACD'] < row['MACD_Signal'] and row['MACD'] < 0):
+        return False
+    return True
 
 def ciclo_principal_247():
+    global ultima_preventiva_ts, ultima_correccion_ts
     print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado 24/7.")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
-            minuto_actual = ahora.minute
-            if minuto_actual % 5 == 1:
+            minuto = ahora.minute
+            ahora_ts = time.time()
+
+            # 🟢🔴 PREVENTIVA: 2 min antes del cierre (minuto 3 u 8)
+            if (minuto % 5 in [3, 8]) and (ahora_ts - ultima_preventiva_ts > 240):
+                ultima_preventiva_ts = ahora_ts
+                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando velas en formación...")
                 for par in PARES_DIVISAS:
-                    if time.time() - cooldown_pares[par] < 900:
-                        continue
                     df = obtener_vela_m5_broker(par)
-                    if df is not None:
-                        df = calcular_cinco_estrategias(df)
-                        resultado = evaluar_vela_m5(df)
-                    else:
+                    if df is None:
                         continue
-                    if resultado == 'SENAL_FALSA':
-                        asunto = f"⚠️ ALERTA DE INVALIDACIÓN: {par} (M5)"
-                        cuerpo = (
-                            f"Par: {par}\n"
-                            f"Hora UTC-4: {ahora.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                            "Motivo: La vela M5 presentó indecisión o fallo en la confluencia.\n"
-                            "ACCIÓN: Descartar operación."
+                    df = calcular_indicadores(df)
+                    vela_actual = df.iloc[-1]
+
+                    if vela_verde_sin_dudas(vela_actual):
+                        predicciones[par] = 'COMPRA'
+                        enviar_alerta_correo(
+                            f"🟢 {par} prev 2min",
+                            f"🟢 {par} prev 2min - Preparar COMPRA\n"
+                            f"Cuerpo fuerte, sin dudas, dirección arriba."
                         )
-                        enviar_alerta_correo(asunto, cuerpo)
-                        cooldown_pares[par] = time.time()
-                time.sleep(240)
-            time.sleep(15)
+                    elif vela_roja_sin_dudas(vela_actual):
+                        predicciones[par] = 'VENTA'
+                        enviar_alerta_correo(
+                            f"🔴 {par} prev 2min",
+                            f"🔴 {par} prev 2min - Preparar VENTA\n"
+                            f"Cuerpo fuerte, sin dudas, dirección abajo."
+                        )
+
+            # ❌ CORRECCIÓN: al cierre exacto (minuto 0 o 5)
+            if (minuto % 5 in [0, 5]) and (ahora_ts - ultima_correccion_ts > 240):
+                ultima_correccion_ts = ahora_ts
+                now_ms = int(time.time() * 1000)
+                print(f"[{ahora.strftime('%H:%M:%S')}] Verificando cierres...")
+                for par in list(predicciones.keys()):
+                    direccion = predicciones[par]
+                    df = obtener_vela_m5_broker(par)
+                    if df is None:
+                        del predicciones[par]
+                        continue
+                    df = calcular_indicadores(df)
+                    cerradas = df[df['close_time'] < now_ms]
+                    if len(cerradas) < 1:
+                        del predicciones[par]
+                        continue
+                    vela_cerrada = cerradas.iloc[-1]
+
+                    era_valida = False
+                    if direccion == 'COMPRA':
+                        era_valida = vela_verde_sin_dudas(vela_cerrada)
+                    elif direccion == 'VENTA':
+                        era_valida = vela_roja_sin_dudas(vela_cerrada)
+
+                    if not era_valida:
+                        enviar_alerta_correo(
+                            f"❌ {par} FALSA",
+                            f"❌ {par} FALSA - NO OPERAR\n"
+                            f"La vela perdió fuerza o mostró dudas al cierre."
+                        )
+                    del predicciones[par]
+
+            time.sleep(10)
         except Exception as e:
-            print(f"Error critico en el bucle 24/7: {e}. Reinciando ciclo en 10 segundos...")
+            print(f"Error crítico: {e}")
             time.sleep(10)
 
 if __name__ == "__main__":
