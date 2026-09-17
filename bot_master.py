@@ -97,7 +97,7 @@ def ciclo_principal_247():
                 for par in PARES_DIVISAS:
                     if time.time() - cooldown_pares[par] < 900:
                         continue
-                    resultado = 'SENAL_FALSA' 
+                    resultado = 'VALIDA' 
                     if resultado == 'SENAL_FALSA':
                         asunto = f"⚠️ ALERTA DE INVALIDACIÓN: {par} (M5)"
                         cuerpo = (
