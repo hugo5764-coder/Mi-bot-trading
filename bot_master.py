@@ -6,8 +6,8 @@ import pytz
 import pandas as pd
 import numpy as np
 
-RESEND_API_KEY = os.getenv("RESEND_API_KEY") 
-EMAIL_ORIGEN = "onboarding@resend.dev" 
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")
+EMAIL_ORIGEN = "onboarding@resend.dev"
 EMAIL_DESTINO = "hugo5764@gmail.com"
 
 TZ_UTC4 = pytz.timezone('America/Caracas')
@@ -18,6 +18,31 @@ PARES_DIVISAS = [
 ]
 
 cooldown_pares = {par: 0 for par in PARES_DIVISAS}
+
+def obtener_vela_m5_broker(par):
+    simbolo_binance = par.replace("USD", "USDT")
+    url = f"https://api.binance.com/api/v3/klines?symbol={simbolo_binance}&interval=5m&limit=100"
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            datos = response.json()
+            df = pd.DataFrame(datos, columns=[
+                'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                'close_time', 'quote_asset_volume', 'number_of_trades',
+                'taker_buy_base', 'taker_buy_quote', 'ignore'
+            ])
+            df['open'] = df['open'].astype(float)
+            df['high'] = df['high'].astype(float)
+            df['low'] = df['low'].astype(float)
+            df['close'] = df['close'].astype(float)
+            df['volume'] = df['volume'].astype(float)
+            return df
+        else:
+            print(f"Binance no tiene el par {simbolo_binance} o hubo un error: {response.status_code}")
+            return None
+    except Exception as e:
+        print(f"Error de conexión con Binance para {simbolo_binance}: {e}")
+        return None
 
 def enviar_alerta_correo(asunto, mensaje):
     try:
@@ -97,7 +122,12 @@ def ciclo_principal_247():
                 for par in PARES_DIVISAS:
                     if time.time() - cooldown_pares[par] < 900:
                         continue
-                    resultado = 'VALIDA' 
+                    df = obtener_vela_m5_broker(par)
+                    if df is not None:
+                        df = calcular_cinco_estrategias(df)
+                        resultado = evaluar_vela_m5(df)
+                    else:
+                        continue
                     if resultado == 'SENAL_FALSA':
                         asunto = f"⚠️ ALERTA DE INVALIDACIÓN: {par} (M5)"
                         cuerpo = (
@@ -111,7 +141,7 @@ def ciclo_principal_247():
                 time.sleep(240)
             time.sleep(15)
         except Exception as e:
-            print(f"Error critico: {e}. Reinciando...")
+            print(f"Error critico en el bucle 24/7: {e}. Reinciando ciclo en 10 segundos...")
             time.sleep(10)
 
 if __name__ == "__main__":
