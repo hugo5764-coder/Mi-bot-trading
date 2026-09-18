@@ -28,12 +28,10 @@ def obtener_vela_m5_broker(par):
         headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(url, timeout=10, headers=headers)
         if r.status_code != 200:
-            print(f"[DEBUG] Yahoo error {par}: {r.status_code}")
             return None
         data = r.json()
         result = data.get('chart', {}).get('result')
         if not result:
-            print(f"[DEBUG] Yahoo sin datos para {par}")
             return None
         res = result[0]
         timestamps = res.get('timestamp', [])
@@ -56,14 +54,15 @@ def obtener_vela_m5_broker(par):
                 'close': float(closes[i]),
                 'volume': float(volumes[i]) if volumes[i] else 0
             })
-        if not rows:
-            print(f"[DEBUG] Sin filas para {par}")
+        if len(rows) < 3:
             return None
         df = pd.DataFrame(rows)
         df['close_time'] = df['timestamp'] + (5 * 60 * 1000)
+        # Filtrar velas vacías (open == close)
+        df = df[df['open'] != df['close']]
         return df
     except Exception as e:
-        print(f"[DEBUG] Error {par}: {e}")
+        print(f"Error {par}: {e}")
         return None
 
 def enviar_alerta_correo(asunto, mensaje):
@@ -83,8 +82,6 @@ def enviar_alerta_correo(asunto, mensaje):
         )
         if r.status_code == 200:
             print(f"[{datetime.now(TZ_UTC4).strftime('%H:%M:%S')}] Enviado: {asunto}")
-        else:
-            print(f"Error Resend: {r.status_code} - {r.text}")
     except Exception as e:
         print(f"Error Resend: {e}")
 
@@ -145,7 +142,7 @@ def analizar_vela(row):
 
 def ciclo_principal_247():
     global ultima_preventiva_ts, ultima_correccion_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (DEBUG MODE).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (DEBUG v2).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -159,12 +156,12 @@ def ciclo_principal_247():
                 datos_ok = 0
                 for par in PARES_DIVISAS:
                     df = obtener_vela_m5_broker(par)
-                    if df is None:
-                        print(f"[DEBUG] {par}: SIN DATOS")
+                    if df is None or len(df) < 3:
                         continue
                     datos_ok += 1
                     df = calcular_indicadores(df)
-                    vela = df.iloc[-1]
+                    # Usar la penúltima vela (última CERRADA)
+                    vela = df.iloc[-2]
                     rango = vela['high'] - vela['low']
                     cuerpo = abs(vela['close'] - vela['open'])
                     prop = (cuerpo / rango * 100) if rango > 0 else 0
