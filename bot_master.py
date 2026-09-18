@@ -28,12 +28,12 @@ def obtener_vela_m5_broker(par):
         headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(url, timeout=10, headers=headers)
         if r.status_code != 200:
-            print(f"Yahoo error {par}: {r.status_code}")
+            print(f"[DEBUG] Yahoo error {par}: {r.status_code}")
             return None
         data = r.json()
         result = data.get('chart', {}).get('result')
         if not result:
-            print(f"Yahoo sin datos para {par}")
+            print(f"[DEBUG] Yahoo sin datos para {par}")
             return None
         res = result[0]
         timestamps = res.get('timestamp', [])
@@ -57,12 +57,13 @@ def obtener_vela_m5_broker(par):
                 'volume': float(volumes[i]) if volumes[i] else 0
             })
         if not rows:
+            print(f"[DEBUG] Sin filas para {par}")
             return None
         df = pd.DataFrame(rows)
         df['close_time'] = df['timestamp'] + (5 * 60 * 1000)
         return df
     except Exception as e:
-        print(f"Error {par}: {e}")
+        print(f"[DEBUG] Error {par}: {e}")
         return None
 
 def enviar_alerta_correo(asunto, mensaje):
@@ -83,7 +84,7 @@ def enviar_alerta_correo(asunto, mensaje):
         if r.status_code == 200:
             print(f"[{datetime.now(TZ_UTC4).strftime('%H:%M:%S')}] Enviado: {asunto}")
         else:
-            print(f"Error Resend: {r.status_code}")
+            print(f"Error Resend: {r.status_code} - {r.text}")
     except Exception as e:
         print(f"Error Resend: {e}")
 
@@ -111,12 +112,11 @@ def analizar_vela(row):
         return None
     cuerpo = abs(row['close'] - row['open'])
     prop_cuerpo = cuerpo / rango
-    if prop_cuerpo < 0.30:
-        return None
-    posicion_cierre = (row['close'] - row['low']) / rango
 
     if row['close'] > row['open']:
-        if posicion_cierre < 0.55:
+        if prop_cuerpo < 0.30:
+            return None
+        if (row['close'] - row['low']) / rango < 0.55:
             return None
         puntos = 0
         if row['EMA_9'] > row['EMA_21']: puntos += 1
@@ -128,7 +128,9 @@ def analizar_vela(row):
         return None
 
     if row['close'] < row['open']:
-        if posicion_cierre > 0.45:
+        if prop_cuerpo < 0.30:
+            return None
+        if (row['close'] - row['low']) / rango > 0.45:
             return None
         puntos = 0
         if row['EMA_9'] < row['EMA_21']: puntos += 1
@@ -143,7 +145,7 @@ def analizar_vela(row):
 
 def ciclo_principal_247():
     global ultima_preventiva_ts, ultima_correccion_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado 24/7 (Yahoo Finance).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (DEBUG MODE).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -154,13 +156,22 @@ def ciclo_principal_247():
                 ultima_preventiva_ts = ahora_ts
                 print(f"[{ahora.strftime('%H:%M:%S')}] Analizando velas...")
                 señales = 0
+                datos_ok = 0
                 for par in PARES_DIVISAS:
                     df = obtener_vela_m5_broker(par)
                     if df is None:
+                        print(f"[DEBUG] {par}: SIN DATOS")
                         continue
+                    datos_ok += 1
                     df = calcular_indicadores(df)
                     vela = df.iloc[-1]
+                    rango = vela['high'] - vela['low']
+                    cuerpo = abs(vela['close'] - vela['open'])
+                    prop = (cuerpo / rango * 100) if rango > 0 else 0
+                    direccion = "VERDE" if vela['close'] > vela['open'] else "ROJA"
                     señal = analizar_vela(vela)
+                    print(f"[DEBUG] {par}: {direccion} cuerpo={prop:.1f}% | señal={señal}")
+
                     if señal == 'COMPRA':
                         señales += 1
                         predicciones[par] = 'COMPRA'
@@ -175,7 +186,7 @@ def ciclo_principal_247():
                             f"🔴 {par} prev 2min",
                             f"🔴 {par} prev 2min - Preparar VENTA"
                         )
-                print(f"[{ahora.strftime('%H:%M:%S')}] Señales enviadas: {señales}")
+                print(f"[{ahora.strftime('%H:%M:%S')}] Datos OK: {datos_ok}/10 | Señales: {señales}")
 
             if (minuto % 5 in [0, 5]) and (ahora_ts - ultima_correccion_ts > 240):
                 ultima_correccion_ts = ahora_ts
