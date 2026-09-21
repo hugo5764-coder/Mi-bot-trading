@@ -12,13 +12,12 @@ EMAIL_DESTINO = "hugo5764@gmail.com"
 
 TZ_UTC4 = pytz.timezone('America/Caracas')
 
-# Solo los 3 pares principales
-PARES_DIVISAS = ["EURUSD", "GBPUSD", "USDJPY"]
+# Pares: EURUSD, USDJPY, AUDUSD (sin GBPUSD)
+PARES_DIVISAS = ["EURUSD", "USDJPY", "AUDUSD"]
 
-# HORARIO DE OPERACIÓN: 05:00 a 12:00 (UTC-4)
+# Horario de operación (UTC-4): 05:00 a 12:00
 HORA_INICIO = 5
 HORA_FIN = 12
-TOP_N_PARES = 1
 
 predicciones = {}
 ultima_preventiva_ts = 0
@@ -108,54 +107,67 @@ def calcular_indicadores(df):
     return df
 
 def analizar_vela(row):
+    """Filtro equilibrado (30% + 2/4 indicadores) para que SÍ lleguen alertas"""
     rango = row['high'] - row['low']
     if rango <= 0:
         return None
     cuerpo = abs(row['close'] - row['open'])
     prop_cuerpo = cuerpo / rango
 
+    if prop_cuerpo < 0.30:
+        return None
+    posicion_cierre = (row['close'] - row['low']) / rango
+
+    # VELA VERDE
     if row['close'] > row['open']:
-        if prop_cuerpo < 0.30: return None
-        if (row['close'] - row['low']) / rango < 0.55: return None
+        if posicion_cierre < 0.55:
+            return None
         puntos = 0
         if row['EMA_9'] > row['EMA_21']: puntos += 1
         if row['RSI'] > 50: puntos += 1
         if row['close'] > row['BB_Mid']: puntos += 1
         if row['MACD'] > row['MACD_Signal']: puntos += 1
-        return ('COMPRA', prop_cuerpo) if puntos >= 2 else None
+        if puntos >= 2:
+            return ('COMPRA', prop_cuerpo)
+        return None
 
+    # VELA ROJA
     if row['close'] < row['open']:
-        if prop_cuerpo < 0.30: return None
-        if (row['close'] - row['low']) / rango > 0.45: return None
+        if posicion_cierre > 0.45:
+            return None
         puntos = 0
         if row['EMA_9'] < row['EMA_21']: puntos += 1
         if row['RSI'] < 50: puntos += 1
         if row['close'] < row['BB_Mid']: puntos += 1
         if row['MACD'] < row['MACD_Signal']: puntos += 1
-        return ('VENTA', prop_cuerpo) if puntos >= 2 else None
+        if puntos >= 2:
+            return ('VENTA', prop_cuerpo)
+        return None
 
     return None
 
 def ciclo_principal_247():
     global ultima_preventiva_ts, ultima_correccion_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v5 - Horario 05:00-12:00).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v7 - 3 pares, cada 10 min, 5am-12pm).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
             minuto = ahora.minute
             hora_actual = ahora.hour
+            dia_semana = ahora.weekday()  # 0=Lunes, 6=Domingo
             ahora_ts = time.time()
 
-            # Verificar si estamos en horario de operación
-            en_horario = HORA_INICIO <= hora_actual < HORA_FIN
+            # Horario: Lunes a Viernes, 05:00 a 12:00
+            en_horario = (0 <= dia_semana <= 4) and (HORA_INICIO <= hora_actual < HORA_FIN)
 
-            if (minuto % 5 in [3, 8]) and (ahora_ts - ultima_preventiva_ts > 240):
+            # PREVENTIVA: Minutos 3, 13, 23, 33, 43, 53 (cada 10 min)
+            if (minuto % 10 == 3) and (ahora_ts - ultima_preventiva_ts > 500):
                 ultima_preventiva_ts = ahora_ts
                 if not en_horario:
-                    print(f"[{ahora.strftime('%H:%M:%S')}] Fuera de horario ({HORA_INICIO}:00-{HORA_FIN}:00). Durmiendo...")
+                    print(f"[{ahora.strftime('%H:%M:%S')}] Fuera de horario o fin de semana.")
                     continue
 
-                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando velas...")
+                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando velas (cada 10 min)...")
                 candidatos = []
                 for par in PARES_DIVISAS:
                     df = obtener_vela_m5_broker(par)
@@ -167,27 +179,30 @@ def ciclo_principal_247():
                     if resultado:
                         candidatos.append((par, resultado[0], resultado[1]))
 
-                candidatos.sort(key=lambda x: x[2], reverse=True)
-                top = candidatos[:TOP_N_PARES]
-
-                for par, direccion, fuerza in top:
+                if candidatos:
+                    candidatos.sort(key=lambda x: x[2], reverse=True)
+                    par, direccion, fuerza = candidatos[0]
                     predicciones[par] = direccion
                     emoji = "🟢" if direccion == "COMPRA" else "🔴"
-                    asunto = f"{emoji} {par} {direccion} 2min | Fuerza {fuerza*100:.0f}% | PREPARATE"
+                    asunto = f"{emoji} {par} {direccion} | Fuerza {fuerza*100:.0f}% | PREPARATE"
                     cuerpo = (
                         f"{emoji} {par} {direccion}\n"
                         f"Fuerza: {fuerza*100:.1f}%\n"
                         f"Hora: {ahora.strftime('%H:%M:%S')}\n"
-                        f"En 2 min abre vela M5. Prepárate."
+                        "Vela M5 fuerte detectada. Prepárate para operar."
                     )
                     enviar_alerta_correo(asunto, cuerpo)
-                print(f"[{ahora.strftime('%H:%M:%S')}] Candidatos: {len(candidatos)} | Enviados: {len(top)}")
+                    print(f"[{ahora.strftime('%H:%M:%S')}] Candidatos: {len(candidatos)} | Enviado: {par}")
+                else:
+                    print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos.")
 
-            if (minuto % 5 in [0, 5]) and (ahora_ts - ultima_correccion_ts > 240):
+            # CORRECCIÓN: Minutos 5, 15, 25, 35, 45, 55 (cada 10 min)
+            if (minuto % 10 == 5) and (ahora_ts - ultima_correccion_ts > 500):
                 ultima_correccion_ts = ahora_ts
                 if not en_horario:
                     continue
                 now_ms = int(time.time() * 1000)
+                print(f"[{ahora.strftime('%H:%M:%S')}] Verificando cierres...")
                 for par in list(predicciones.keys()):
                     direccion = predicciones[par]
                     df = obtener_vela_m5_broker(par)
@@ -202,11 +217,11 @@ def ciclo_principal_247():
                     vela_cerrada = cerradas.iloc[-1]
                     resultado = analizar_vela(vela_cerrada)
                     if not resultado or resultado[0] != direccion:
-                        asunto = f"❌ {par} FALSA | NO OPERAR | Vela perdió fuerza"
+                        asunto = f"❌ {par} FALSA | NO OPERAR"
                         cuerpo = (
                             f"❌ {par} FALSA\n"
                             f"Hora: {ahora.strftime('%H:%M:%S')}\n"
-                            f"ACCIÓN: NO OPERAR. Descartar entrada."
+                            "La vela perdió fuerza. NO OPERAR."
                         )
                         enviar_alerta_correo(asunto, cuerpo)
                     del predicciones[par]
