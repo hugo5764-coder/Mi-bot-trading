@@ -1,3 +1,4 @@
+    ciclo_principal_247()
 import os
 import requests
 import time
@@ -103,7 +104,6 @@ def calcular_indicadores(df):
     exp2 = df['close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = exp1 - exp2
     df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    # ADX simplificado
     high_low = df['high'] - df['low']
     high_close = abs(df['high'] - df['close'].shift())
     low_close = abs(df['low'] - df['close'].shift())
@@ -120,65 +120,78 @@ def calcular_indicadores(df):
     return df
 
 def analizar_vela(df, idx):
-    """Filtro competitivo v11: 3 filtros de calidad + 4/5 indicadores"""
+    """
+    Sistema de PUNTUACIÓN (v12):
+    Suma puntos por cada indicador alineado. Umbral: 7/10.
+    """
     vela = df.iloc[idx]
     rango = vela['high'] - vela['low']
     if rango <= 0:
         return None
+
     cuerpo = abs(vela['close'] - vela['open'])
     prop_cuerpo = cuerpo / rango
-
-    # FILTRO 1: Cuerpo >= 45%
-    if prop_cuerpo < 0.45:
-        return None
-
-    # FILTRO 2: Mechas <= 25% (sin dudas)
     mecha_sup = vela['high'] - max(vela['close'], vela['open'])
     mecha_inf = min(vela['close'], vela['open']) - vela['low']
-    if mecha_sup / rango > 0.25:
-        return None
-    if mecha_inf / rango > 0.25:
-        return None
 
-    # FILTRO 3: ADX >= 20 (tendencia)
-    if pd.isna(vela['ADX']) or vela['ADX'] < 20:
-        return None
-
-    posicion_cierre = (vela['close'] - vela['low']) / rango
-
-    # VELA VERDE (COMPRA)
+    # Determinar dirección
     if vela['close'] > vela['open']:
-        if posicion_cierre < 0.70:
-            return None
-        puntos = 0
-        if vela['EMA_9'] > vela['EMA_21']: puntos += 1
-        if vela['EMA_21'] > vela['EMA_50']: puntos += 1
-        if 55 < vela['RSI'] < 80: puntos += 1
-        if vela['close'] > vela['BB_Mid']: puntos += 1
-        if vela['MACD'] > vela['MACD_Signal']: puntos += 1
-        if puntos >= 4:
-            return ('COMPRA', prop_cuerpo)
+        direccion = 'COMPRA'
+    elif vela['close'] < vela['open']:
+        direccion = 'VENTA'
+    else:
         return None
 
-    # VELA ROJA (VENTA)
-    if vela['close'] < vela['open']:
-        if posicion_cierre > 0.30:
-            return None
-        puntos = 0
-        if vela['EMA_9'] < vela['EMA_21']: puntos += 1
-        if vela['EMA_21'] < vela['EMA_50']: puntos += 1
-        if 20 < vela['RSI'] < 45: puntos += 1
-        if vela['close'] < vela['BB_Mid']: puntos += 1
-        if vela['MACD'] < vela['MACD_Signal']: puntos += 1
-        if puntos >= 4:
-            return ('VENTA', prop_cuerpo)
-        return None
+    puntos = 0
 
+    # 1. Cuerpo
+    if prop_cuerpo >= 0.50:
+        puntos += 2
+    elif prop_cuerpo >= 0.35:
+        puntos += 1
+
+    # 2. Mechas
+    if mecha_sup / rango <= 0.20:
+        puntos += 1
+    if mecha_inf / rango <= 0.20:
+        puntos += 1
+
+    # 3. EMA
+    if direccion == 'COMPRA' and vela['EMA_9'] > vela['EMA_21']:
+        puntos += 1
+    if direccion == 'VENTA' and vela['EMA_9'] < vela['EMA_21']:
+        puntos += 1
+
+    # 4. RSI
+    if direccion == 'COMPRA' and 55 < vela['RSI'] < 80:
+        puntos += 1
+    if direccion == 'VENTA' and 20 < vela['RSI'] < 45:
+        puntos += 1
+
+    # 5. Bollinger
+    if direccion == 'COMPRA' and vela['close'] > vela['BB_Mid']:
+        puntos += 1
+    if direccion == 'VENTA' and vela['close'] < vela['BB_Mid']:
+        puntos += 1
+
+    # 6. MACD
+    if direccion == 'COMPRA' and vela['MACD'] > vela['MACD_Signal']:
+        puntos += 1
+    if direccion == 'VENTA' and vela['MACD'] < vela['MACD_Signal']:
+        puntos += 1
+
+    # 7. ADX
+    if not pd.isna(vela['ADX']) and vela['ADX'] >= 20:
+        puntos += 1
+
+    # Umbral mínimo: 7 puntos
+    if puntos >= 7:
+        return (direccion, prop_cuerpo, puntos)
     return None
 
 def ciclo_principal_247():
     global ultima_preventiva_ts, ultima_correccion_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v11 - COMPETITIVO).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v12 - PUNTUACIÓN).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -204,25 +217,26 @@ def ciclo_principal_247():
                     df = calcular_indicadores(df)
                     resultado = analizar_vela(df, len(df) - 2)
                     if resultado:
-                        candidatos.append((par, resultado[0], resultado[1]))
-                        print(f"[COMPET] {par}: {resultado[0]} fuerza={resultado[1]*100:.1f}%")
+                        candidatos.append((par, resultado[0], resultado[1], resultado[2]))
+                        print(f"[PUNTOS] {par}: {resultado[0]} {resultado[2]}/10")
 
                 if candidatos:
-                    candidatos.sort(key=lambda x: x[2], reverse=True)
-                    par, direccion, fuerza = candidatos[0]
+                    candidatos.sort(key=lambda x: x[3], reverse=True)
+                    par, direccion, fuerza, pts = candidatos[0]
                     predicciones[par] = direccion
                     emoji = "🟢" if direccion == "COMPRA" else "🔴"
-                    asunto = f"{emoji} {par} {direccion} | Fuerza {fuerza*100:.0f}% | PREPARATE"
+                    asunto = f"{emoji} {par} {direccion} | {pts}/10 pts | Fuerza {fuerza*100:.0f}% | PREPARATE"
                     cuerpo = (
                         f"{emoji} {par} {direccion}\n"
+                        f"Puntaje: {pts}/10\n"
                         f"Fuerza: {fuerza*100:.1f}%\n"
                         f"Hora: {ahora.strftime('%H:%M:%S')}\n"
-                        "Vela M5 fuerte detectada. Prepárate para operar."
+                        "Vela M5 con alta puntuación. Prepárate para operar."
                     )
                     enviar_alerta_correo(asunto, cuerpo)
-                    print(f"[{ahora.strftime('%H:%M:%S')}] Candidatos: {len(candidatos)} | Enviado: {par}")
+                    print(f"[{ahora.strftime('%H:%M:%S')}] Candidatos: {len(candidatos)} | Enviado: {par} ({pts}/10)")
                 else:
-                    print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos.")
+                    print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos (ningún par llegó a 7/10).")
 
             if (minuto % 10 == 5) and (ahora_ts - ultima_correccion_ts > 500):
                 ultima_correccion_ts = ahora_ts
