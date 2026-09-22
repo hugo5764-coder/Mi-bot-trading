@@ -1,4 +1,3 @@
-    ciclo_principal_247()
 import os
 import requests
 import time
@@ -13,7 +12,11 @@ EMAIL_DESTINO = "hugo5764@gmail.com"
 
 TZ_UTC4 = pytz.timezone('America/Caracas')
 
-PARES_DIVISAS = ["EURUSD", "USDJPY", "AUDUSD"]
+# 8 PARES - Sin GBPUSD (que no está en tu Pocket Option)
+PARES_DIVISAS = [
+    "EURUSD", "USDJPY", "AUDUSD", "USDCAD",
+    "NZDUSD", "EURGBP", "EURJPY", "GBPJPY"
+]
 
 HORA_INICIO = 5
 HORA_FIN = 12
@@ -120,10 +123,7 @@ def calcular_indicadores(df):
     return df
 
 def analizar_vela(df, idx):
-    """
-    Sistema de PUNTUACIÓN (v12):
-    Suma puntos por cada indicador alineado. Umbral: 7/10.
-    """
+    """Sistema de PUNTUACIÓN (v13): 7/10 puntos mínimos"""
     vela = df.iloc[idx]
     rango = vela['high'] - vela['low']
     if rango <= 0:
@@ -134,7 +134,6 @@ def analizar_vela(df, idx):
     mecha_sup = vela['high'] - max(vela['close'], vela['open'])
     mecha_inf = min(vela['close'], vela['open']) - vela['low']
 
-    # Determinar dirección
     if vela['close'] > vela['open']:
         direccion = 'COMPRA'
     elif vela['close'] < vela['open']:
@@ -144,54 +143,46 @@ def analizar_vela(df, idx):
 
     puntos = 0
 
-    # 1. Cuerpo
     if prop_cuerpo >= 0.50:
         puntos += 2
     elif prop_cuerpo >= 0.35:
         puntos += 1
 
-    # 2. Mechas
     if mecha_sup / rango <= 0.20:
         puntos += 1
     if mecha_inf / rango <= 0.20:
         puntos += 1
 
-    # 3. EMA
     if direccion == 'COMPRA' and vela['EMA_9'] > vela['EMA_21']:
         puntos += 1
     if direccion == 'VENTA' and vela['EMA_9'] < vela['EMA_21']:
         puntos += 1
 
-    # 4. RSI
     if direccion == 'COMPRA' and 55 < vela['RSI'] < 80:
         puntos += 1
     if direccion == 'VENTA' and 20 < vela['RSI'] < 45:
         puntos += 1
 
-    # 5. Bollinger
     if direccion == 'COMPRA' and vela['close'] > vela['BB_Mid']:
         puntos += 1
     if direccion == 'VENTA' and vela['close'] < vela['BB_Mid']:
         puntos += 1
 
-    # 6. MACD
     if direccion == 'COMPRA' and vela['MACD'] > vela['MACD_Signal']:
         puntos += 1
     if direccion == 'VENTA' and vela['MACD'] < vela['MACD_Signal']:
         puntos += 1
 
-    # 7. ADX
     if not pd.isna(vela['ADX']) and vela['ADX'] >= 20:
         puntos += 1
 
-    # Umbral mínimo: 7 puntos
     if puntos >= 7:
         return (direccion, prop_cuerpo, puntos)
     return None
 
 def ciclo_principal_247():
     global ultima_preventiva_ts, ultima_correccion_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v12 - PUNTUACIÓN).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v13 - 8 PAARES + PUNTUACION).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -202,13 +193,14 @@ def ciclo_principal_247():
 
             en_horario = (0 <= dia_semana <= 4) and (HORA_INICIO <= hora_actual < HORA_FIN)
 
+            # ANALISIS PREVENTIVO (cada 10 min)
             if (minuto % 10 == 3) and (ahora_ts - ultima_preventiva_ts > 500):
                 ultima_preventiva_ts = ahora_ts
                 if not en_horario:
                     print(f"[{ahora.strftime('%H:%M:%S')}] Fuera de horario.")
                     continue
 
-                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando velas...")
+                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando 8 pares...")
                 candidatos = []
                 for par in PARES_DIVISAS:
                     df = obtener_vela_m5_broker(par)
@@ -222,22 +214,22 @@ def ciclo_principal_247():
 
                 if candidatos:
                     candidatos.sort(key=lambda x: x[3], reverse=True)
-                    par, direccion, fuerza, pts = candidatos[0]
-                    predicciones[par] = direccion
-                    emoji = "🟢" if direccion == "COMPRA" else "🔴"
-                    asunto = f"{emoji} {par} {direccion} | {pts}/10 pts | Fuerza {fuerza*100:.0f}% | PREPARATE"
-                    cuerpo = (
-                        f"{emoji} {par} {direccion}\n"
-                        f"Puntaje: {pts}/10\n"
-                        f"Fuerza: {fuerza*100:.1f}%\n"
-                        f"Hora: {ahora.strftime('%H:%M:%S')}\n"
-                        "Vela M5 con alta puntuación. Prepárate para operar."
-                    )
-                    enviar_alerta_correo(asunto, cuerpo)
-                    print(f"[{ahora.strftime('%H:%M:%S')}] Candidatos: {len(candidatos)} | Enviado: {par} ({pts}/10)")
+                    for par, direccion, fuerza, pts in candidatos:
+                        predicciones[par] = direccion
+                        emoji = "🟢" if direccion == "COMPRA" else "🔴"
+                        asunto = f"{emoji} {par} {direccion} | {pts}/10 pts | Fuerza {fuerza*100:.0f}%"
+                        cuerpo = (
+                            f"{emoji} {par} {direccion}\n"
+                            f"Puntaje: {pts}/10\n"
+                            f"Fuerza: {fuerza*100:.1f}%\n"
+                            f"Hora: {ahora.strftime('%H:%M:%S')}"
+                        )
+                        enviar_alerta_correo(asunto, cuerpo)
+                    print(f"[{ahora.strftime('%H:%M:%S')}] Alertas enviadas: {len(candidatos)}")
                 else:
-                    print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos (ningún par llegó a 7/10).")
+                    print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos >= 7/10.")
 
+            # CORRECCION (cada 10 min)
             if (minuto % 10 == 5) and (ahora_ts - ultima_correccion_ts > 500):
                 ultima_correccion_ts = ahora_ts
                 if not en_horario:
