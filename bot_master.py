@@ -12,7 +12,6 @@ EMAIL_DESTINO = "hugo5764@gmail.com"
 
 TZ_UTC4 = pytz.timezone('America/Caracas')
 
-# 8 PARES - Sin GBPUSD (que no está en tu Pocket Option)
 PARES_DIVISAS = [
     "EURUSD", "USDJPY", "AUDUSD", "USDCAD",
     "NZDUSD", "EURGBP", "EURJPY", "GBPJPY"
@@ -123,7 +122,6 @@ def calcular_indicadores(df):
     return df
 
 def analizar_vela(df, idx):
-    """Sistema de PUNTUACIÓN (v13): 7/10 puntos mínimos"""
     vela = df.iloc[idx]
     rango = vela['high'] - vela['low']
     if rango <= 0:
@@ -182,7 +180,7 @@ def analizar_vela(df, idx):
 
 def ciclo_principal_247():
     global ultima_preventiva_ts, ultima_correccion_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v13 - 8 PAARES + PUNTUACION).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v14 - 1 CORREO por ciclo).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -193,7 +191,7 @@ def ciclo_principal_247():
 
             en_horario = (0 <= dia_semana <= 4) and (HORA_INICIO <= hora_actual < HORA_FIN)
 
-            # ANALISIS PREVENTIVO (cada 10 min)
+            # PREVENTIVA: 1 solo correo con el MEJOR par
             if (minuto % 10 == 3) and (ahora_ts - ultima_preventiva_ts > 500):
                 ultima_preventiva_ts = ahora_ts
                 if not en_horario:
@@ -213,29 +211,31 @@ def ciclo_principal_247():
                         print(f"[PUNTOS] {par}: {resultado[0]} {resultado[2]}/10")
 
                 if candidatos:
+                    # Ordenar por puntuación (mejor primero) y enviar SOLO EL MEJOR
                     candidatos.sort(key=lambda x: x[3], reverse=True)
-                    for par, direccion, fuerza, pts in candidatos:
-                        predicciones[par] = direccion
-                        emoji = "🟢" if direccion == "COMPRA" else "🔴"
-                        asunto = f"{emoji} {par} {direccion} | {pts}/10 pts | Fuerza {fuerza*100:.0f}%"
-                        cuerpo = (
-                            f"{emoji} {par} {direccion}\n"
-                            f"Puntaje: {pts}/10\n"
-                            f"Fuerza: {fuerza*100:.1f}%\n"
-                            f"Hora: {ahora.strftime('%H:%M:%S')}"
-                        )
-                        enviar_alerta_correo(asunto, cuerpo)
-                    print(f"[{ahora.strftime('%H:%M:%S')}] Alertas enviadas: {len(candidatos)}")
+                    par, direccion, fuerza, pts = candidatos[0]
+                    predicciones[par] = direccion
+                    emoji = "🟢" if direccion == "COMPRA" else "🔴"
+                    asunto = f"{emoji} {par} {direccion} | {pts}/10 pts | Fuerza {fuerza*100:.0f}%"
+                    cuerpo = (
+                        f"{emoji} {par} {direccion}\n"
+                        f"Puntaje: {pts}/10\n"
+                        f"Fuerza: {fuerza*100:.1f}%\n"
+                        f"Hora: {ahora.strftime('%H:%M:%S')}\n"
+                        "Vela M5 con la mejor puntuación de este ciclo."
+                    )
+                    enviar_alerta_correo(asunto, cuerpo)
+                    print(f"[{ahora.strftime('%H:%M:%S')}] Enviado: {par} ({pts}/10) | Otros candidatos: {len(candidatos)-1}")
                 else:
                     print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos >= 7/10.")
 
-            # CORRECCION (cada 10 min)
+            # CORRECCION: solo del par enviado
             if (minuto % 10 == 5) and (ahora_ts - ultima_correccion_ts > 500):
                 ultima_correccion_ts = ahora_ts
                 if not en_horario:
                     continue
                 now_ms = int(time.time() * 1000)
-                print(f"[{ahora.strftime('%H:%M:%S')}] Verificando cierres...")
+                print(f"[{ahora.strftime('%H:%M:%S')}] Verificando cierre...")
                 for par in list(predicciones.keys()):
                     direccion = predicciones[par]
                     df = obtener_vela_m5_broker(par)
