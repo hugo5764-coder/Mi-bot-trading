@@ -122,6 +122,13 @@ def calcular_indicadores(df):
     return df
 
 def analizar_vela(df, idx):
+    """
+    v15: FILTROS OBLIGATORIOS + Puntuación
+    - Cuerpo >= 45% (obligatorio)
+    - Mecha total <= 30% (obligatorio)
+    - Cierre en extremo (obligatorio)
+    - Puntuación >= 7/10
+    """
     vela = df.iloc[idx]
     rango = vela['high'] - vela['low']
     if rango <= 0:
@@ -131,7 +138,9 @@ def analizar_vela(df, idx):
     prop_cuerpo = cuerpo / rango
     mecha_sup = vela['high'] - max(vela['close'], vela['open'])
     mecha_inf = min(vela['close'], vela['open']) - vela['low']
+    mecha_total = (mecha_sup + mecha_inf) / rango
 
+    # Determinar dirección
     if vela['close'] > vela['open']:
         direccion = 'COMPRA'
     elif vela['close'] < vela['open']:
@@ -139,16 +148,33 @@ def analizar_vela(df, idx):
     else:
         return None
 
+    # FILTRO OBLIGATORIO 1: Cuerpo mínimo 45%
+    if prop_cuerpo < 0.45:
+        return None
+
+    # FILTRO OBLIGATORIO 2: Mechas totales <= 30% (sin dudas)
+    if mecha_total > 0.30:
+        return None
+
+    posicion_cierre = (vela['close'] - vela['low']) / rango
+
+    # FILTRO OBLIGATORIO 3: Cierre en extremo
+    if direccion == 'COMPRA' and posicion_cierre < 0.70:
+        return None
+    if direccion == 'VENTA' and posicion_cierre > 0.30:
+        return None
+
+    # SISTEMA DE PUNTUACIÓN
     puntos = 0
 
-    if prop_cuerpo >= 0.50:
+    if prop_cuerpo >= 0.60:
         puntos += 2
-    elif prop_cuerpo >= 0.35:
+    elif prop_cuerpo >= 0.45:
         puntos += 1
 
-    if mecha_sup / rango <= 0.20:
+    if mecha_sup / rango <= 0.15:
         puntos += 1
-    if mecha_inf / rango <= 0.20:
+    if mecha_inf / rango <= 0.15:
         puntos += 1
 
     if direccion == 'COMPRA' and vela['EMA_9'] > vela['EMA_21']:
@@ -174,13 +200,14 @@ def analizar_vela(df, idx):
     if not pd.isna(vela['ADX']) and vela['ADX'] >= 20:
         puntos += 1
 
+    # PUNTUACIÓN MÍNIMA: 7/10
     if puntos >= 7:
         return (direccion, prop_cuerpo, puntos)
     return None
 
 def ciclo_principal_247():
     global ultima_preventiva_ts, ultima_correccion_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v14 - 1 CORREO por ciclo).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v15 - FILTROS OBLIGATORIOS + PUNTOS).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -191,14 +218,14 @@ def ciclo_principal_247():
 
             en_horario = (0 <= dia_semana <= 4) and (HORA_INICIO <= hora_actual < HORA_FIN)
 
-            # PREVENTIVA: 1 solo correo con el MEJOR par
+            # PREVENTIVA
             if (minuto % 10 == 3) and (ahora_ts - ultima_preventiva_ts > 500):
                 ultima_preventiva_ts = ahora_ts
                 if not en_horario:
                     print(f"[{ahora.strftime('%H:%M:%S')}] Fuera de horario.")
                     continue
 
-                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando 8 pares...")
+                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando 8 pares (filtros obligatorios)...")
                 candidatos = []
                 for par in PARES_DIVISAS:
                     df = obtener_vela_m5_broker(par)
@@ -208,10 +235,9 @@ def ciclo_principal_247():
                     resultado = analizar_vela(df, len(df) - 2)
                     if resultado:
                         candidatos.append((par, resultado[0], resultado[1], resultado[2]))
-                        print(f"[PUNTOS] {par}: {resultado[0]} {resultado[2]}/10")
+                        print(f"[CANDIDATO] {par}: {resultado[0]} {resultado[2]}/10 cuerpo={resultado[1]*100:.1f}%")
 
                 if candidatos:
-                    # Ordenar por puntuación (mejor primero) y enviar SOLO EL MEJOR
                     candidatos.sort(key=lambda x: x[3], reverse=True)
                     par, direccion, fuerza, pts = candidatos[0]
                     predicciones[par] = direccion
@@ -222,14 +248,14 @@ def ciclo_principal_247():
                         f"Puntaje: {pts}/10\n"
                         f"Fuerza: {fuerza*100:.1f}%\n"
                         f"Hora: {ahora.strftime('%H:%M:%S')}\n"
-                        "Vela M5 con la mejor puntuación de este ciclo."
+                        "Vela M5 con filtros obligatorios + puntuación alta."
                     )
                     enviar_alerta_correo(asunto, cuerpo)
-                    print(f"[{ahora.strftime('%H:%M:%S')}] Enviado: {par} ({pts}/10) | Otros candidatos: {len(candidatos)-1}")
+                    print(f"[{ahora.strftime('%H:%M:%S')}] Enviado: {par} ({pts}/10) | Otros: {len(candidatos)-1}")
                 else:
-                    print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos >= 7/10.")
+                    print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos que cumplan filtros obligatorios.")
 
-            # CORRECCION: solo del par enviado
+            # CORRECCION
             if (minuto % 10 == 5) and (ahora_ts - ultima_correccion_ts > 500):
                 ultima_correccion_ts = ahora_ts
                 if not en_horario:
