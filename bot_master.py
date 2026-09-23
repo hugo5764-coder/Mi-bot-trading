@@ -178,7 +178,7 @@ def analizar_vela(df, idx):
 
 def ciclo_principal_247():
     global ultima_preventiva_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v21 - PREVENTIVA + CORRECCION RAPIDA).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v22 - VELA CERRADA + CONFIRMACION).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -189,20 +189,21 @@ def ciclo_principal_247():
             ahora_ts = time.time()
             en_horario = (0 <= dia_semana <= 4) and (HORA_INICIO <= hora_actual < HORA_FIN)
 
-            # PREVENTIVA: al minuto 3 con segundo 0-9
-            if (minuto % 10 == 3) and (segundo < 10) and (ahora_ts - ultima_preventiva_ts > 500):
+            # ANALISIS en minuto 0 (cuando la vela acaba de cerrar)
+            if (minuto % 5 == 0) and (segundo < 30) and (ahora_ts - ultima_preventiva_ts > 240):
                 ultima_preventiva_ts = ahora_ts
                 if not en_horario:
                     continue
 
-                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando 4 pares...")
+                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando velas CERRADAS...")
                 candidatos = []
                 for par in PARES_DIVISAS:
                     df = obtener_vela_m5_broker(par)
                     if df is None or len(df) < 5:
                         continue
                     df = calcular_indicadores(df)
-                    resultado = analizar_vela(df, len(df) - 2)
+                    # Última vela CERRADA (índice -1 ahora que cambió el minuto)
+                    resultado = analizar_vela(df, len(df) - 1)
                     if resultado:
                         candidatos.append((par, resultado[0], resultado[1], resultado[2]))
                         print(f"[CANDIDATO] {par}: {resultado[0]} {resultado[2]}/10")
@@ -218,18 +219,18 @@ def ciclo_principal_247():
                         f"{emoji} {par} {direccion}\n"
                         f"Puntaje: {pts}/10\n"
                         f"Fuerza: {fuerza*100:.1f}%\n"
-                        f"Hora: {ahora.strftime('%H:%M:%S')}"
+                        f"Vela CERRADA a las {ahora.strftime('%H:%M')}"
                     )
                     enviar_alerta_correo(asunto, cuerpo)
                     print(f"[{ahora.strftime('%H:%M:%S')}] Enviado: {par} ({pts}/10)")
                 else:
                     print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos.")
 
-            # CORRECCION RAPIDA: al minuto 5 con segundo 0-9 (2 min después)
-            if (minuto % 10 == 5) and (segundo < 10):
+            # VERIFICACION en minuto 2 (la nueva vela en formación)
+            if (minuto % 5 == 2) and (segundo < 30):
                 if not en_horario:
                     continue
-                print(f"[{ahora.strftime('%H:%M:%S')}] Verificando cierre (2 min)...")
+                print(f"[{ahora.strftime('%H:%M:%S')}] Confirmando vela en formación...")
                 for par in list(predicciones.keys()):
                     direccion = predicciones[par]
                     df = obtener_vela_m5_broker(par)
@@ -237,23 +238,23 @@ def ciclo_principal_247():
                         del predicciones[par]
                         continue
                     df = calcular_indicadores(df)
-                    # La vela que estamos verificando ya está cerrada a esta altura
-                    resultado = analizar_vela(df, len(df) - 2)
+                    # La vela en formación actual (última fila)
+                    resultado = analizar_vela(df, len(df) - 1)
                     if not resultado or resultado[0] != direccion:
                         par_limpio = par.replace("/", "")
                         asunto = f"❌ {par_limpio} FALSA | NO OPERAR"
                         cuerpo = (
                             f"❌ {par} FALSA\n"
                             f"Hora: {ahora.strftime('%H:%M:%S')}\n"
-                            "La vela perdió fuerza al cierre. NO OPERAR."
+                            "La nueva vela NO confirma la dirección. NO OPERAR."
                         )
                         enviar_alerta_correo(asunto, cuerpo)
                     del predicciones[par]
 
-            time.sleep(5)
+            time.sleep(10)
         except Exception as e:
             print(f"Error crítico: {e}")
-            time.sleep(5)
+            time.sleep(10)
 
 if __name__ == "__main__":
     ciclo_principal_247()
