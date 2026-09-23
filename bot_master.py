@@ -6,8 +6,10 @@ import pytz
 import pandas as pd
 import numpy as np
 
-TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY")
+# API Keys directamente en el código para evitar problemas con Railway
+TWELVE_DATA_API_KEY = "13432b4bc90c4d4aa76e4b1a1cfd564"
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
+
 EMAIL_ORIGEN = "onboarding@resend.dev"
 EMAIL_DESTINO = "hugo5764@gmail.com"
 
@@ -182,7 +184,7 @@ def analizar_vela(df, idx):
 
 def ciclo_principal_247():
     global ultima_preventiva_ts, ultima_correccion_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v16 - TWELVE DATA TIEMPO REAL).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v17 - TWELVE DATA FIJA).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -198,7 +200,7 @@ def ciclo_principal_247():
                     print(f"[{ahora.strftime('%H:%M:%S')}] Fuera de horario.")
                     continue
 
-                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando 8 pares (Twelve Data)...")
+                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando 8 pares...")
                 candidatos = []
                 for par in PARES_DIVISAS:
                     df = obtener_vela_m5_broker(par)
@@ -208,7 +210,7 @@ def ciclo_principal_247():
                     resultado = analizar_vela(df, len(df) - 2)
                     if resultado:
                         candidatos.append((par, resultado[0], resultado[1], resultado[2]))
-                        print(f"[CANDIDATO] {par}: {resultado[0]} {resultado[2]}/10 cuerpo={resultado[1]*100:.1f}%")
+                        print(f"[CANDIDATO] {par}: {resultado[0]} {resultado[2]}/10")
 
                 if candidatos:
                     candidatos.sort(key=lambda x: x[3], reverse=True)
@@ -221,8 +223,7 @@ def ciclo_principal_247():
                         f"{emoji} {par} {direccion}\n"
                         f"Puntaje: {pts}/10\n"
                         f"Fuerza: {fuerza*100:.1f}%\n"
-                        f"Hora: {ahora.strftime('%H:%M:%S')}\n"
-                        "Datos en TIEMPO REAL de Twelve Data."
+                        f"Hora: {ahora.strftime('%H:%M:%S')}"
                     )
                     enviar_alerta_correo(asunto, cuerpo)
                     print(f"[{ahora.strftime('%H:%M:%S')}] Enviado: {par} ({pts}/10)")
