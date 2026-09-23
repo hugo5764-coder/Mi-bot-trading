@@ -13,7 +13,6 @@ EMAIL_DESTINO = "hugo5764@gmail.com"
 
 TZ_UTC4 = pytz.timezone('America/Caracas')
 
-# REDUCIDO A 4 PARES para no agotar Twelve Data
 PARES_DIVISAS = ["EUR/USD", "USD/JPY", "USD/CAD", "EUR/JPY"]
 
 HORA_INICIO = 5
@@ -179,21 +178,19 @@ def analizar_vela(df, idx):
 
 def ciclo_principal_247():
     global ultima_preventiva_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v20 - 4 PARES + 1 CICLO).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v21 - PREVENTIVA + CORRECCION RAPIDA).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
             minuto = ahora.minute
+            segundo = ahora.second
             hora_actual = ahora.hour
             dia_semana = ahora.weekday()
             ahora_ts = time.time()
             en_horario = (0 <= dia_semana <= 4) and (HORA_INICIO <= hora_actual < HORA_FIN)
 
-            # Un solo ciclo por cada 10 min: prevención en minutos 3, 13, 23, 33, 43, 53
-            # Verificación en minutos 7, 17, 27, 37, 47, 57 (4 min después)
-            # Juntos hacen solo 8 llamadas por ciclo (4 pares × 2 momentos)
-
-            if (minuto % 10 == 3) and (ahora_ts - ultima_preventiva_ts > 500):
+            # PREVENTIVA: al minuto 3 con segundo 0-9
+            if (minuto % 10 == 3) and (segundo < 10) and (ahora_ts - ultima_preventiva_ts > 500):
                 ultima_preventiva_ts = ahora_ts
                 if not en_horario:
                     continue
@@ -228,11 +225,11 @@ def ciclo_principal_247():
                 else:
                     print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos.")
 
-            # Verificación 4 min después: minutos 7, 17, 27, 37, 47, 57
-            if (minuto % 10 == 7):
+            # CORRECCION RAPIDA: al minuto 5 con segundo 0-9 (2 min después)
+            if (minuto % 10 == 5) and (segundo < 10):
                 if not en_horario:
                     continue
-                print(f"[{ahora.strftime('%H:%M:%S')}] Verificando cierre...")
+                print(f"[{ahora.strftime('%H:%M:%S')}] Verificando cierre (2 min)...")
                 for par in list(predicciones.keys()):
                     direccion = predicciones[par]
                     df = obtener_vela_m5_broker(par)
@@ -240,6 +237,7 @@ def ciclo_principal_247():
                         del predicciones[par]
                         continue
                     df = calcular_indicadores(df)
+                    # La vela que estamos verificando ya está cerrada a esta altura
                     resultado = analizar_vela(df, len(df) - 2)
                     if not resultado or resultado[0] != direccion:
                         par_limpio = par.replace("/", "")
@@ -252,10 +250,10 @@ def ciclo_principal_247():
                         enviar_alerta_correo(asunto, cuerpo)
                     del predicciones[par]
 
-            time.sleep(10)
+            time.sleep(5)
         except Exception as e:
             print(f"Error crítico: {e}")
-            time.sleep(10)
+            time.sleep(5)
 
 if __name__ == "__main__":
     ciclo_principal_247()
