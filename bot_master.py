@@ -8,7 +8,6 @@ import numpy as np
 
 TWELVE_DATA_API_KEY = "f0c27fa81ca04860bb8857c44091ad5b"
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
-
 EMAIL_ORIGEN = "onboarding@resend.dev"
 EMAIL_DESTINO = "hugo5764@gmail.com"
 
@@ -183,7 +182,7 @@ def analizar_vela(df, idx):
 
 def ciclo_principal_247():
     global ultima_preventiva_ts, ultima_correccion_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v18 - TWELVE DATA OK).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v19 - VERIFICACION CORREGIDA).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -193,10 +192,10 @@ def ciclo_principal_247():
             ahora_ts = time.time()
             en_horario = (0 <= dia_semana <= 4) and (HORA_INICIO <= hora_actual < HORA_FIN)
 
+            # PREVENTIVA: minutos 3, 13, 23, 33, 43, 53
             if (minuto % 10 == 3) and (ahora_ts - ultima_preventiva_ts > 500):
                 ultima_preventiva_ts = ahora_ts
                 if not en_horario:
-                    print(f"[{ahora.strftime('%H:%M:%S')}] Fuera de horario.")
                     continue
 
                 print(f"[{ahora.strftime('%H:%M:%S')}] Analizando 8 pares...")
@@ -209,7 +208,6 @@ def ciclo_principal_247():
                     resultado = analizar_vela(df, len(df) - 2)
                     if resultado:
                         candidatos.append((par, resultado[0], resultado[1], resultado[2]))
-                        print(f"[CANDIDATO] {par}: {resultado[0]} {resultado[2]}/10")
 
                 if candidatos:
                     candidatos.sort(key=lambda x: x[3], reverse=True)
@@ -222,19 +220,19 @@ def ciclo_principal_247():
                         f"{emoji} {par} {direccion}\n"
                         f"Puntaje: {pts}/10\n"
                         f"Fuerza: {fuerza*100:.1f}%\n"
-                        f"Hora: {ahora.strftime('%H:%M:%S')}\n"
-                        "Datos en TIEMPO REAL de Twelve Data."
+                        f"Hora: {ahora.strftime('%H:%M:%S')}"
                     )
                     enviar_alerta_correo(asunto, cuerpo)
                     print(f"[{ahora.strftime('%H:%M:%S')}] Enviado: {par} ({pts}/10)")
                 else:
                     print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos.")
 
-            if (minuto % 10 == 5) and (ahora_ts - ultima_correccion_ts > 500):
+            # CORRECCION: minutos 7, 17, 27, 37, 47, 57 (4 min después de la preventiva)
+            if (minuto % 10 == 7) and (ahora_ts - ultima_correccion_ts > 500):
                 ultima_correccion_ts = ahora_ts
                 if not en_horario:
                     continue
-                print(f"[{ahora.strftime('%H:%M:%S')}] Verificando cierre...")
+                print(f"[{ahora.strftime('%H:%M:%S')}] Verificando cierre (4 min después)...")
                 for par in list(predicciones.keys()):
                     direccion = predicciones[par]
                     df = obtener_vela_m5_broker(par)
@@ -242,6 +240,7 @@ def ciclo_principal_247():
                         del predicciones[par]
                         continue
                     df = calcular_indicadores(df)
+                    # La vela cerrada ya debería estar en df.iloc[-2]
                     resultado = analizar_vela(df, len(df) - 2)
                     if not resultado or resultado[0] != direccion:
                         par_limpio = par.replace("/", "")
@@ -249,7 +248,7 @@ def ciclo_principal_247():
                         cuerpo = (
                             f"❌ {par} FALSA\n"
                             f"Hora: {ahora.strftime('%H:%M:%S')}\n"
-                            "La vela perdió fuerza. NO OPERAR."
+                            "La vela perdió fuerza al cierre. NO OPERAR."
                         )
                         enviar_alerta_correo(asunto, cuerpo)
                     del predicciones[par]
