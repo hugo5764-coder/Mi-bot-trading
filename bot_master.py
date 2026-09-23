@@ -6,8 +6,7 @@ import pytz
 import pandas as pd
 import numpy as np
 
-# API Keys directamente en el código para evitar problemas con Railway
-TWELVE_DATA_API_KEY = "13432b4bc90c4d4aa76e4b1a1cfd564"
+TWELVE_DATA_API_KEY = "f0c27fa81ca04860bb8857c44091ad5b"
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 
 EMAIL_ORIGEN = "onboarding@resend.dev"
@@ -184,7 +183,7 @@ def analizar_vela(df, idx):
 
 def ciclo_principal_247():
     global ultima_preventiva_ts, ultima_correccion_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v17 - TWELVE DATA FIJA).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v18 - TWELVE DATA OK).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -223,7 +222,8 @@ def ciclo_principal_247():
                         f"{emoji} {par} {direccion}\n"
                         f"Puntaje: {pts}/10\n"
                         f"Fuerza: {fuerza*100:.1f}%\n"
-                        f"Hora: {ahora.strftime('%H:%M:%S')}"
+                        f"Hora: {ahora.strftime('%H:%M:%S')}\n"
+                        "Datos en TIEMPO REAL de Twelve Data."
                     )
                     enviar_alerta_correo(asunto, cuerpo)
                     print(f"[{ahora.strftime('%H:%M:%S')}] Enviado: {par} ({pts}/10)")
