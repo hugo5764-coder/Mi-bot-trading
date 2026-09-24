@@ -13,8 +13,8 @@ EMAIL_DESTINO = "hugo5764@gmail.com"
 
 TZ_UTC4 = pytz.timezone('America/Caracas')
 
-# Pares disponibles en Pocket Option
-PARES_DIVISAS = ["EUR/USD", "USD/JPY", "USD/CAD", "GBP/JPY"]
+# SOLO 2 PARES para reducir consumo
+PARES_DIVISAS = ["GBP/JPY", "USD/JPY"]
 
 HORA_INICIO = 5
 HORA_FIN = 12
@@ -34,11 +34,9 @@ def obtener_vela_m5_broker(par):
     try:
         r = requests.get(url, params=params, timeout=10)
         if r.status_code != 200:
-            print(f"Error HTTP {par}: {r.status_code}")
             return None
         data = r.json()
         if data.get("status") == "error":
-            print(f"Error TwelveData {par}: {data.get('message')}")
             return None
         values = data.get("values", [])
         if len(values) < 5:
@@ -134,6 +132,7 @@ def analizar_vela(df, idx):
     else:
         return None
 
+    # FILTROS ESTRICTOS para más calidad
     if prop_cuerpo < 0.50:
         return None
     if mecha_total > 0.28:
@@ -173,13 +172,13 @@ def analizar_vela(df, idx):
     if not pd.isna(vela['ADX']) and vela['ADX'] >= 22:
         puntos += 1
 
-    if puntos >= 7:
+    if puntos >= 8:  # Subí de 7 a 8 para más calidad
         return (direccion, prop_cuerpo, puntos)
     return None
 
 def ciclo_principal_247():
     global ultima_preventiva_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v24 - 4 PARES POCKET OPTION).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v25 - 2 PARES + CALIDAD ALTA).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -190,9 +189,11 @@ def ciclo_principal_247():
             ahora_ts = time.time()
             en_horario = (0 <= dia_semana <= 4) and (HORA_INICIO <= hora_actual < HORA_FIN)
 
-            # Analisis en minuto 0 (vela cerrada)
+            # Analisis cada 5 min en minuto 0
             if (minuto % 5 == 0) and (segundo < 30) and (ahora_ts - ultima_preventiva_ts > 240):
                 ultima_preventiva_ts = ahora_ts
+                predicciones.clear()  # Limpiar predicciones viejas
+
                 if not en_horario:
                     continue
 
@@ -214,28 +215,26 @@ def ciclo_principal_247():
                     par_limpio = par.replace("/", "")
                     predicciones[par] = direccion
                     emoji = "🟢" if direccion == "COMPRA" else "🔴"
-                    asunto = f"{emoji} {par_limpio} {direccion} | {pts}/10 pts | Fuerza {fuerza*100:.0f}%"
+                    asunto = f"{emoji} {par_limpio} {direccion} | {pts}/10 pts"
                     cuerpo = (
                         f"{emoji} {par} {direccion}\n"
                         f"Puntaje: {pts}/10\n"
                         f"Fuerza: {fuerza*100:.1f}%\n"
-                        f"Vela CERRADA a las {ahora.strftime('%H:%M')}"
+                        f"Hora: {ahora.strftime('%H:%M:%S')}"
                     )
                     enviar_alerta_correo(asunto, cuerpo)
-                    print(f"[{ahora.strftime('%H:%M:%S')}] Enviado: {par} ({pts}/10)")
                 else:
                     print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos.")
 
-            # Verificación en minuto 2
+            # Verificación 2 min después (minuto 2)
             if (minuto % 5 == 2) and (segundo < 30):
-                if not en_horario:
+                if not en_horario or not predicciones:
                     continue
                 print(f"[{ahora.strftime('%H:%M:%S')}] Confirmando vela...")
                 for par in list(predicciones.keys()):
                     direccion = predicciones[par]
                     df = obtener_vela_m5_broker(par)
                     if df is None or len(df) < 5:
-                        del predicciones[par]
                         continue
                     df = calcular_indicadores(df)
                     resultado = analizar_vela(df, len(df) - 1)
@@ -248,7 +247,7 @@ def ciclo_principal_247():
                             "La nueva vela NO confirma. NO OPERAR."
                         )
                         enviar_alerta_correo(asunto, cuerpo)
-                    del predicciones[par]
+                    predicciones.clear()
 
             time.sleep(10)
         except Exception as e:
