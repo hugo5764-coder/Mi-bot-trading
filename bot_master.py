@@ -13,7 +13,8 @@ EMAIL_DESTINO = "hugo5764@gmail.com"
 
 TZ_UTC4 = pytz.timezone('America/Caracas')
 
-PARES_DIVISAS = ["EUR/USD", "USD/JPY", "USD/CAD", "EUR/JPY"]
+# Pares disponibles en Pocket Option
+PARES_DIVISAS = ["EUR/USD", "USD/JPY", "USD/CAD", "GBP/JPY"]
 
 HORA_INICIO = 5
 HORA_FIN = 12
@@ -133,25 +134,25 @@ def analizar_vela(df, idx):
     else:
         return None
 
-    if prop_cuerpo < 0.45:
+    if prop_cuerpo < 0.50:
         return None
-    if mecha_total > 0.30:
+    if mecha_total > 0.28:
         return None
 
     posicion_cierre = (vela['close'] - vela['low']) / rango
-    if direccion == 'COMPRA' and posicion_cierre < 0.70:
+    if direccion == 'COMPRA' and posicion_cierre < 0.72:
         return None
-    if direccion == 'VENTA' and posicion_cierre > 0.30:
+    if direccion == 'VENTA' and posicion_cierre > 0.28:
         return None
 
     puntos = 0
     if prop_cuerpo >= 0.60:
         puntos += 2
-    elif prop_cuerpo >= 0.45:
+    elif prop_cuerpo >= 0.50:
         puntos += 1
-    if mecha_sup / rango <= 0.15:
+    if mecha_sup / rango <= 0.14:
         puntos += 1
-    if mecha_inf / rango <= 0.15:
+    if mecha_inf / rango <= 0.14:
         puntos += 1
     if direccion == 'COMPRA' and vela['EMA_9'] > vela['EMA_21']:
         puntos += 1
@@ -169,7 +170,7 @@ def analizar_vela(df, idx):
         puntos += 1
     if direccion == 'VENTA' and vela['MACD'] < vela['MACD_Signal']:
         puntos += 1
-    if not pd.isna(vela['ADX']) and vela['ADX'] >= 20:
+    if not pd.isna(vela['ADX']) and vela['ADX'] >= 22:
         puntos += 1
 
     if puntos >= 7:
@@ -178,7 +179,7 @@ def analizar_vela(df, idx):
 
 def ciclo_principal_247():
     global ultima_preventiva_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v22 - VELA CERRADA + CONFIRMACION).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro M5 iniciado (v24 - 4 PARES POCKET OPTION).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -189,7 +190,7 @@ def ciclo_principal_247():
             ahora_ts = time.time()
             en_horario = (0 <= dia_semana <= 4) and (HORA_INICIO <= hora_actual < HORA_FIN)
 
-            # ANALISIS en minuto 0 (cuando la vela acaba de cerrar)
+            # Analisis en minuto 0 (vela cerrada)
             if (minuto % 5 == 0) and (segundo < 30) and (ahora_ts - ultima_preventiva_ts > 240):
                 ultima_preventiva_ts = ahora_ts
                 if not en_horario:
@@ -202,7 +203,6 @@ def ciclo_principal_247():
                     if df is None or len(df) < 5:
                         continue
                     df = calcular_indicadores(df)
-                    # Última vela CERRADA (índice -1 ahora que cambió el minuto)
                     resultado = analizar_vela(df, len(df) - 1)
                     if resultado:
                         candidatos.append((par, resultado[0], resultado[1], resultado[2]))
@@ -226,11 +226,11 @@ def ciclo_principal_247():
                 else:
                     print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos.")
 
-            # VERIFICACION en minuto 2 (la nueva vela en formación)
+            # Verificación en minuto 2
             if (minuto % 5 == 2) and (segundo < 30):
                 if not en_horario:
                     continue
-                print(f"[{ahora.strftime('%H:%M:%S')}] Confirmando vela en formación...")
+                print(f"[{ahora.strftime('%H:%M:%S')}] Confirmando vela...")
                 for par in list(predicciones.keys()):
                     direccion = predicciones[par]
                     df = obtener_vela_m5_broker(par)
@@ -238,7 +238,6 @@ def ciclo_principal_247():
                         del predicciones[par]
                         continue
                     df = calcular_indicadores(df)
-                    # La vela en formación actual (última fila)
                     resultado = analizar_vela(df, len(df) - 1)
                     if not resultado or resultado[0] != direccion:
                         par_limpio = par.replace("/", "")
@@ -246,7 +245,7 @@ def ciclo_principal_247():
                         cuerpo = (
                             f"❌ {par} FALSA\n"
                             f"Hora: {ahora.strftime('%H:%M:%S')}\n"
-                            "La nueva vela NO confirma la dirección. NO OPERAR."
+                            "La nueva vela NO confirma. NO OPERAR."
                         )
                         enviar_alerta_correo(asunto, cuerpo)
                     del predicciones[par]
