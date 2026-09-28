@@ -16,7 +16,7 @@ TZ_UTC4 = pytz.timezone('America/Caracas')
 PARES_DIVISAS = ["GBP/JPY", "USD/JPY", "USD/CAD", "EUR/USD"]
 
 HORA_INICIO = 5
-HORA_FIN = 12
+HORA_FIN = 11
 
 ultimo_envio_ts = 0
 
@@ -103,7 +103,6 @@ def tendencia(df):
     return 'LATERAL'
 
 def analizar_vela_en_formacion(df_m5):
-    """Analiza la vela M5 en formación. Necesita 4/5 confirmaciones."""
     vela = df_m5.iloc[-1]
     rango = vela['high'] - vela['low']
     if rango <= 0:
@@ -144,7 +143,7 @@ def analizar_vela_en_formacion(df_m5):
 
 def ciclo_principal_247():
     global ultimo_envio_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro v32 - 1 SEÑAL cada 15 min.")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro v32 - HORARIO 5AM a 11AM.")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -155,13 +154,12 @@ def ciclo_principal_247():
             ahora_ts = time.time()
             en_horario = (0 <= dia_semana <= 4) and (HORA_INICIO <= hora_actual < HORA_FIN)
 
-            # Analiza SOLO en minutos :03, :18, :33, :48 (cada 15 min, 3 min después del inicio de vela M15)
-            # La idea: analizar a los 3 min de la vela M5 que está en formación
             minutos_analisis = [3, 18, 33, 48]
 
             if (minuto in minutos_analisis) and (segundo < 20) and (ahora_ts - ultimo_envio_ts > 800):
                 ultimo_envio_ts = ahora_ts
                 if not en_horario:
+                    print(f"[{ahora.strftime('%H:%M:%S')}] Fuera de horario.")
                     continue
 
                 print(f"[{ahora.strftime('%H:%M:%S')}] Analizando 4 pares (ciclo 15 min)...")
@@ -199,7 +197,6 @@ def ciclo_principal_247():
 
                     candidatos.append((par, direccion, fuerza, conf, tend_m15, tend_h1))
 
-                # Solo enviar el MEJOR (1 solo por ciclo)
                 if candidatos:
                     candidatos.sort(key=lambda x: x[2], reverse=True)
                     par, direccion, fuerza, conf, tend_m15, tend_h1 = candidatos[0]
@@ -214,11 +211,14 @@ def ciclo_principal_247():
                         f"M15: {tend_m15}\n"
                         f"H1: {tend_h1}\n"
                         f"Hora: {ahora.strftime('%H:%M:%S')}\n\n"
-                        "Entra en el minuto 4.\n"
-                        "Vencimiento: 5 minutos."
+                        "PROCEDIMIENTO:\n"
+                        "1. Espera 1 minuto (al minuto 4 de la vela).\n"
+                        "2. Verifica que la vela siga en esa direccion.\n"
+                        "3. Si sigue: entra. Si cambio: no entras.\n"
+                        "4. Vencimiento: 5 minutos."
                     )
                     enviar_alerta_correo(asunto, cuerpo)
-                    print(f"[{ahora.strftime('%H:%M:%S')}] ✅ ENVIADO: {par} {direccion} | Candidatos: {len(candidatos)}")
+                    print(f"[{ahora.strftime('%H:%M:%S')}] ENVIADO: {par} {direccion} | Candidatos: {len(candidatos)}")
                 else:
                     print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos en este ciclo.")
 
