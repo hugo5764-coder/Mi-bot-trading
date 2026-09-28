@@ -13,13 +13,12 @@ EMAIL_DESTINO = "hugo5764@gmail.com"
 
 TZ_UTC4 = pytz.timezone('America/Caracas')
 
-# 4 pares de Pocket Option
 PARES_DIVISAS = ["GBP/JPY", "USD/JPY", "USD/CAD", "EUR/USD"]
 
 HORA_INICIO = 5
 HORA_FIN = 12
 
-ultima_preventiva_ts = 0
+ultimo_envio_ts = 0
 
 def obtener_velas(par, intervalo):
     url = "https://api.twelvedata.com/time_series"
@@ -51,7 +50,6 @@ def obtener_velas(par, intervalo):
                 'volume': float(v.get('volume', 0)) if v.get('volume') else 0
             })
         df = pd.DataFrame(rows)
-        df = df[df['open'] != df['close']]
         return df
     except Exception as e:
         print(f"Error {par} {intervalo}: {e}")
@@ -88,29 +86,25 @@ def calcular_indicadores(df):
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
-    df['BB_Mid'] = df['close'].rolling(window=20).mean()
-    df['BB_Std'] = df['close'].rolling(window=20).std()
-    df['BB_Upper'] = df['BB_Mid'] + (df['BB_Std'] * 2)
-    df['BB_Lower'] = df['BB_Mid'] - (df['BB_Std'] * 2)
     exp1 = df['close'].ewm(span=12, adjust=False).mean()
     exp2 = df['close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = exp1 - exp2
     df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    df['ROC'] = df['close'].pct_change(periods=3) * 100
-    df['Vol_Avg'] = df['volume'].rolling(window=20).mean()
+    df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
     return df
 
 def tendencia(df):
     df = calcular_indicadores(df)
-    ultima = df.iloc[-1]
-    if ultima['EMA_9'] > ultima['EMA_21'] > ultima['EMA_50']:
+    u = df.iloc[-1]
+    if u['EMA_9'] > u['EMA_21'] > u['EMA_50']:
         return 'ALCISTA'
-    if ultima['EMA_9'] < ultima['EMA_21'] < ultima['EMA_50']:
+    if u['EMA_9'] < u['EMA_21'] < u['EMA_50']:
         return 'BAJISTA'
     return 'LATERAL'
 
-def analizar_m5(df):
-    vela = df.iloc[-1]
+def analizar_vela_en_formacion(df_m5):
+    """Analiza la vela M5 en formación. Necesita 4/5 confirmaciones."""
+    vela = df_m5.iloc[-1]
     rango = vela['high'] - vela['low']
     if rango <= 0:
         return None
@@ -128,29 +122,29 @@ def analizar_m5(df):
     else:
         return None
 
-    if prop_cuerpo < 0.50:
-        return None
-    if mecha_total > 0.25:
-        return None
+    confirmaciones = 0
+    if prop_cuerpo >= 0.45: confirmaciones += 1
+    if mecha_total <= 0.28: confirmaciones += 1
 
     posicion_cierre = (vela['close'] - vela['low']) / rango
-    if direccion == 'COMPRA' and posicion_cierre < 0.75:
-        return None
-    if direccion == 'VENTA' and posicion_cierre > 0.25:
-        return None
+    if direccion == 'COMPRA' and posicion_cierre >= 0.72: confirmaciones += 1
+    elif direccion == 'VENTA' and posicion_cierre <= 0.28: confirmaciones += 1
 
-    if pd.isna(vela['ROC']):
-        return None
-    if direccion == 'COMPRA' and vela['ROC'] < 0.05:
-        return None
-    if direccion == 'VENTA' and vela['ROC'] > -0.05:
-        return None
+    if not pd.isna(vela['RSI']):
+        if direccion == 'COMPRA' and 52 < vela['RSI'] < 82: confirmaciones += 1
+        elif direccion == 'VENTA' and 18 < vela['RSI'] < 48: confirmaciones += 1
 
-    return (direccion, prop_cuerpo)
+    if not pd.isna(vela['MACD_Hist']):
+        if direccion == 'COMPRA' and vela['MACD_Hist'] > 0: confirmaciones += 1
+        elif direccion == 'VENTA' and vela['MACD_Hist'] < 0: confirmaciones += 1
+
+    if confirmaciones >= 4:
+        return (direccion, prop_cuerpo, confirmaciones)
+    return None
 
 def ciclo_principal_247():
-    global ultima_preventiva_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro v28 - DOBLE CONFLUENCIA (M5+M15).")
+    global ultimo_envio_ts
+    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro v32 - 1 SEÑAL cada 15 min.")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -161,59 +155,72 @@ def ciclo_principal_247():
             ahora_ts = time.time()
             en_horario = (0 <= dia_semana <= 4) and (HORA_INICIO <= hora_actual < HORA_FIN)
 
-            if (minuto % 5 == 0) and (segundo < 25) and (ahora_ts - ultima_preventiva_ts > 240):
-                ultima_preventiva_ts = ahora_ts
+            # Analiza SOLO en minutos :03, :18, :33, :48 (cada 15 min, 3 min después del inicio de vela M15)
+            # La idea: analizar a los 3 min de la vela M5 que está en formación
+            minutos_analisis = [3, 18, 33, 48]
+
+            if (minuto in minutos_analisis) and (segundo < 20) and (ahora_ts - ultimo_envio_ts > 800):
+                ultimo_envio_ts = ahora_ts
                 if not en_horario:
                     continue
 
-                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando doble confluencia...")
-                señales = 0
+                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando 4 pares (ciclo 15 min)...")
+                candidatos = []
 
                 for par in PARES_DIVISAS:
-                    # Análisis M5
                     df_m5 = obtener_velas(par, "5min")
                     if df_m5 is None or len(df_m5) < 20:
                         continue
                     df_m5 = calcular_indicadores(df_m5)
-                    resultado_m5 = analizar_m5(df_m5)
-                    if not resultado_m5:
+                    resultado = analizar_vela_en_formacion(df_m5)
+                    if not resultado:
                         continue
-                    direccion_m5, fuerza = resultado_m5
+                    direccion, fuerza, conf = resultado
 
-                    # Tendencia M15
                     df_m15 = obtener_velas(par, "15min")
                     if df_m15 is None or len(df_m15) < 20:
                         continue
                     tend_m15 = tendencia(df_m15)
 
-                    # Alineación
+                    df_h1 = obtener_velas(par, "1h")
+                    if df_h1 is None or len(df_h1) < 20:
+                        continue
+                    tend_h1 = tendencia(df_h1)
+
                     alineado = False
-                    if direccion_m5 == 'COMPRA' and tend_m15 == 'ALCISTA':
+                    if direccion == 'COMPRA' and tend_m15 == 'ALCISTA' and tend_h1 == 'ALCISTA':
                         alineado = True
-                    elif direccion_m5 == 'VENTA' and tend_m15 == 'BAJISTA':
+                    elif direccion == 'VENTA' and tend_m15 == 'BAJISTA' and tend_h1 == 'BAJISTA':
                         alineado = True
 
                     if not alineado:
-                        print(f"[{par}] M5={direccion_m5} M15={tend_m15} NO alineado")
+                        print(f"[{par}] {direccion} M15={tend_m15} H1={tend_h1} NO alineado")
                         continue
 
-                    señales += 1
+                    candidatos.append((par, direccion, fuerza, conf, tend_m15, tend_h1))
+
+                # Solo enviar el MEJOR (1 solo por ciclo)
+                if candidatos:
+                    candidatos.sort(key=lambda x: x[2], reverse=True)
+                    par, direccion, fuerza, conf, tend_m15, tend_h1 = candidatos[0]
+
                     par_limpio = par.replace("/", "")
-                    emoji = "🟢" if direccion_m5 == "COMPRA" else "🔴"
-                    asunto = f"{emoji} {par_limpio} {direccion_m5} | Fuerza {fuerza*100:.0f}% | M5+M15 OK"
+                    emoji = "🟢" if direccion == "COMPRA" else "🔴"
+                    asunto = f"{emoji} {par_limpio} {direccion} | Fuerza {fuerza*100:.0f}% | {conf}/5"
                     cuerpo = (
-                        f"{emoji} {par} {direccion_m5}\n"
-                        f"Fuerza M5: {fuerza*100:.1f}%\n"
-                        f"Tendencia M15: {tend_m15}\n"
+                        f"{emoji} {par} {direccion}\n"
+                        f"Fuerza: {fuerza*100:.1f}%\n"
+                        f"Confirmaciones: {conf}/5\n"
+                        f"M15: {tend_m15}\n"
+                        f"H1: {tend_h1}\n"
                         f"Hora: {ahora.strftime('%H:%M:%S')}\n\n"
-                        "DOBLE CONFLUENCIA OK\n"
-                        "Opera en los proximos 2-3 minutos.\n"
+                        "Entra en el minuto 4.\n"
                         "Vencimiento: 5 minutos."
                     )
                     enviar_alerta_correo(asunto, cuerpo)
-                    print(f"[{ahora.strftime('%H:%M:%S')}] ALERTA {par} {direccion_m5}")
-
-                print(f"[{ahora.strftime('%H:%M:%S')}] Senales: {señales}")
+                    print(f"[{ahora.strftime('%H:%M:%S')}] ✅ ENVIADO: {par} {direccion} | Candidatos: {len(candidatos)}")
+                else:
+                    print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos en este ciclo.")
 
             time.sleep(10)
         except Exception as e:
