@@ -1,4 +1,5 @@
 import os
+import json  # <--- ESTA LÍNEA ES VITAL, NO LA BORRES
 import requests
 import time
 from datetime import datetime
@@ -62,17 +63,27 @@ def enviar_alerta_ntfy(asunto, mensaje):
             "priority": 5,
             "tags": ["rotating_light", "chart_with_upwards_trend"]
         }
+        
+        # EL FIX ESTÁ AQUÍ: Forzamos UTF-8 para que los emojis no rompan el bot
+        data_json = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+        
+        headers = {
+            "Content-Type": "application/json; charset=utf-8"
+        }
+        
         r = requests.post(
             "https://ntfy.sh/",
-            json=payload,
+            data=data_json,
+            headers=headers,
             timeout=10
         )
         if r.status_code == 200:
-            print(f"[{datetime.now(TZ_UTC4).strftime('%H:%M:%S')}] NTFY OK: {asunto}")
+            print(f"[{datetime.now(TZ_UTC4).strftime('%H:%M:%S')}] NTFY OK")
         else:
             print(f"Error NTFY: {r.status_code} - {r.text[:100]}")
     except Exception as e:
-        print(f"Error NTFY: {e}")
+        # Si falla el envío, el bot NO se apaga, solo imprime el error
+        print(f"Error NTFY (El bot sigue vivo): {e}")
 
 def calcular_indicadores(df):
     df['EMA_9'] = df['close'].ewm(span=9, adjust=False).mean()
@@ -104,7 +115,7 @@ def analizar_vela_en_formacion(df_m5):
     rango = vela['high'] - vela['low']
     if rango <= 0:
         return None
-
+    
     cuerpo = abs(vela['close'] - vela['open'])
     prop_cuerpo = cuerpo / rango
     mecha_sup = vela['high'] - max(vela['close'], vela['open'])
@@ -140,7 +151,7 @@ def analizar_vela_en_formacion(df_m5):
 
 def ciclo_principal_247():
     global ultimo_envio_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot v35 - NTFY JSON (6AM a 11AM).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot v35 - NTFY JSON (6AM a 11AM)")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -153,12 +164,12 @@ def ciclo_principal_247():
 
             minutos_analisis = [3, 18, 33, 48]
 
-            if (minuto in minutos_analisis) and (segundo < 20) and (ahora_ts - ultimo_envio_ts > 800):
+            if (minuto in minutos_analisis) and (segundo < 20):
                 ultimo_envio_ts = ahora_ts
                 if not en_horario:
                     continue
 
-                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando 4 pares...")
+                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando {len(PARES_DIVISAS)} pares...")
                 candidatos = []
 
                 for par in PARES_DIVISAS:
