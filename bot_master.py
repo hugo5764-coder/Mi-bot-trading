@@ -15,7 +15,7 @@ TZ_UTC4 = pytz.timezone('America/Caracas')
 
 PARES_DIVISAS = ["GBP/JPY", "USD/JPY", "USD/CAD", "EUR/USD"]
 
-HORA_INICIO = 5
+HORA_INICIO = 6
 HORA_FIN = 11
 
 ultimo_envio_ts = 0
