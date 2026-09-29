@@ -54,22 +54,23 @@ def obtener_velas(par, intervalo):
         return None
 
 def enviar_alerta_ntfy(asunto, mensaje):
-    """Envía notificación push instantánea por ntfy"""
     try:
+        payload = {
+            "topic": NTFY_TOPIC,
+            "title": asunto,
+            "message": mensaje,
+            "priority": 5,
+            "tags": ["rotating_light", "chart_with_upwards_trend"]
+        }
         r = requests.post(
-            f"https://ntfy.sh/{NTFY_TOPIC}",
-            data=mensaje.encode('utf-8'),
-            headers={
-                "Title": asunto,
-                "Priority": "urgent",
-                "Tags": "rotating_light,chart_with_upwards_trend"
-            },
+            "https://ntfy.sh/",
+            json=payload,
             timeout=10
         )
         if r.status_code == 200:
             print(f"[{datetime.now(TZ_UTC4).strftime('%H:%M:%S')}] NTFY OK: {asunto}")
         else:
-            print(f"Error NTFY: {r.status_code}")
+            print(f"Error NTFY: {r.status_code} - {r.text[:100]}")
     except Exception as e:
         print(f"Error NTFY: {e}")
 
@@ -139,7 +140,7 @@ def analizar_vela_en_formacion(df_m5):
 
 def ciclo_principal_247():
     global ultimo_envio_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot v34 - NTFY INSTANTANEO (6AM a 11AM).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot v35 - NTFY JSON (6AM a 11AM).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -199,11 +200,10 @@ def ciclo_principal_247():
                         f"Confirmaciones: {conf}/5\n"
                         f"M15: {tend_m15}\n"
                         f"Hora: {ahora.strftime('%H:%M:%S')}\n\n"
-                        f"ENTRA AHORA (CALL si es COMPRA, PUT si es VENTA)\n"
+                        f"ENTRA AHORA (CALL si COMPRA, PUT si VENTA)\n"
                         f"Vencimiento: 5 min"
                     )
                     enviar_alerta_ntfy(asunto, cuerpo)
-                    print(f"[{ahora.strftime('%H:%M:%S')}] ENVIADO: {par} {direccion}")
                 else:
                     print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos.")
 
