@@ -7,9 +7,7 @@ import pandas as pd
 import numpy as np
 
 TWELVE_DATA_API_KEY = "f0c27fa81ca04860bb8857c44091ad5b"
-RESEND_API_KEY = os.getenv("RESEND_API_KEY")
-EMAIL_ORIGEN = "onboarding@resend.dev"
-EMAIL_DESTINO = "hugo5764@gmail.com"
+NTFY_TOPIC = "hugo-bot-trading-2026"
 
 TZ_UTC4 = pytz.timezone('America/Caracas')
 
@@ -55,27 +53,25 @@ def obtener_velas(par, intervalo):
         print(f"Error {par} {intervalo}: {e}")
         return None
 
-def enviar_alerta_correo(asunto, mensaje):
+def enviar_alerta_ntfy(asunto, mensaje):
+    """Envía notificación push instantánea por ntfy"""
     try:
         r = requests.post(
-            "https://api.resend.com/emails",
+            f"https://ntfy.sh/{NTFY_TOPIC}",
+            data=mensaje.encode('utf-8'),
             headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type": "application/json",
+                "Title": asunto,
+                "Priority": "urgent",
+                "Tags": "rotating_light,chart_with_upwards_trend"
             },
-            json={
-                "from": EMAIL_ORIGEN,
-                "to": [EMAIL_DESTINO],
-                "subject": asunto,
-                "text": mensaje,
-            },
+            timeout=10
         )
         if r.status_code == 200:
-            print(f"[{datetime.now(TZ_UTC4).strftime('%H:%M:%S')}] OK: {asunto}")
+            print(f"[{datetime.now(TZ_UTC4).strftime('%H:%M:%S')}] NTFY OK: {asunto}")
         else:
-            print(f"Error Resend: {r.status_code}")
+            print(f"Error NTFY: {r.status_code}")
     except Exception as e:
-        print(f"Error Resend: {e}")
+        print(f"Error NTFY: {e}")
 
 def calcular_indicadores(df):
     df['EMA_9'] = df['close'].ewm(span=9, adjust=False).mean()
@@ -143,7 +139,7 @@ def analizar_vela_en_formacion(df_m5):
 
 def ciclo_principal_247():
     global ultimo_envio_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot v33 - ALERTAS 6AM a 11AM (FILTRO 3/5).")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot v34 - NTFY INSTANTANEO (6AM a 11AM).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -196,28 +192,25 @@ def ciclo_principal_247():
 
                     par_limpio = par.replace("/", "")
                     emoji = "🟢" if direccion == "COMPRA" else "🔴"
-                    asunto = f"{emoji} {par_limpio} {direccion} | Fuerza {fuerza*100:.0f}% | {conf}/5"
+                    asunto = f"{emoji} {par_limpio} {direccion} | Fuerza {fuerza*100:.0f}%"
                     cuerpo = (
                         f"{emoji} {par} {direccion}\n"
                         f"Fuerza: {fuerza*100:.1f}%\n"
                         f"Confirmaciones: {conf}/5\n"
                         f"M15: {tend_m15}\n"
                         f"Hora: {ahora.strftime('%H:%M:%S')}\n\n"
-                        "PROCEDIMIENTO:\n"
-                        "1. Espera 1 minuto.\n"
-                        "2. Verifica que la vela siga igual.\n"
-                        "3. Si sigue: entra. Si no: pasa.\n"
-                        "4. Vencimiento: 5 minutos."
+                        f"ENTRA AHORA (CALL si es COMPRA, PUT si es VENTA)\n"
+                        f"Vencimiento: 5 min"
                     )
-                    enviar_alerta_correo(asunto, cuerpo)
+                    enviar_alerta_ntfy(asunto, cuerpo)
                     print(f"[{ahora.strftime('%H:%M:%S')}] ENVIADO: {par} {direccion}")
                 else:
                     print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos.")
 
-            time.sleep(10)
+            time.sleep(5)
         except Exception as e:
             print(f"Error critico: {e}")
-            time.sleep(10)
+            time.sleep(5)
 
 if __name__ == "__main__":
     ciclo_principal_247()
