@@ -96,9 +96,9 @@ def calcular_indicadores(df):
 def tendencia(df):
     df = calcular_indicadores(df)
     u = df.iloc[-1]
-    if u['EMA_9'] > u['EMA_21'] > u['EMA_50']:
+    if u['EMA_9'] > u['EMA_21']:
         return 'ALCISTA'
-    if u['EMA_9'] < u['EMA_21'] < u['EMA_50']:
+    if u['EMA_9'] < u['EMA_21']:
         return 'BAJISTA'
     return 'LATERAL'
 
@@ -122,28 +122,28 @@ def analizar_vela_en_formacion(df_m5):
         return None
 
     confirmaciones = 0
-    if prop_cuerpo >= 0.45: confirmaciones += 1
-    if mecha_total <= 0.28: confirmaciones += 1
+    if prop_cuerpo >= 0.40: confirmaciones += 1
+    if mecha_total <= 0.30: confirmaciones += 1
 
     posicion_cierre = (vela['close'] - vela['low']) / rango
-    if direccion == 'COMPRA' and posicion_cierre >= 0.72: confirmaciones += 1
-    elif direccion == 'VENTA' and posicion_cierre <= 0.28: confirmaciones += 1
+    if direccion == 'COMPRA' and posicion_cierre >= 0.68: confirmaciones += 1
+    elif direccion == 'VENTA' and posicion_cierre <= 0.32: confirmaciones += 1
 
     if not pd.isna(vela['RSI']):
-        if direccion == 'COMPRA' and 52 < vela['RSI'] < 82: confirmaciones += 1
-        elif direccion == 'VENTA' and 18 < vela['RSI'] < 48: confirmaciones += 1
+        if direccion == 'COMPRA' and 50 < vela['RSI'] < 82: confirmaciones += 1
+        elif direccion == 'VENTA' and 18 < vela['RSI'] < 50: confirmaciones += 1
 
     if not pd.isna(vela['MACD_Hist']):
         if direccion == 'COMPRA' and vela['MACD_Hist'] > 0: confirmaciones += 1
         elif direccion == 'VENTA' and vela['MACD_Hist'] < 0: confirmaciones += 1
 
-    if confirmaciones >= 4:
+    if confirmaciones >= 3:
         return (direccion, prop_cuerpo, confirmaciones)
     return None
 
 def ciclo_principal_247():
     global ultimo_envio_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot Maestro v32 - HORARIO 5AM a 11AM.")
+    print(f"[{datetime.now(TZ_UTC4)}] Bot v33 - ALERTAS 6AM a 11AM (FILTRO 3/5).")
     while True:
         try:
             ahora = datetime.now(TZ_UTC4)
@@ -159,10 +159,9 @@ def ciclo_principal_247():
             if (minuto in minutos_analisis) and (segundo < 20) and (ahora_ts - ultimo_envio_ts > 800):
                 ultimo_envio_ts = ahora_ts
                 if not en_horario:
-                    print(f"[{ahora.strftime('%H:%M:%S')}] Fuera de horario.")
                     continue
 
-                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando 4 pares (ciclo 15 min)...")
+                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando 4 pares...")
                 candidatos = []
 
                 for par in PARES_DIVISAS:
@@ -180,26 +179,20 @@ def ciclo_principal_247():
                         continue
                     tend_m15 = tendencia(df_m15)
 
-                    df_h1 = obtener_velas(par, "1h")
-                    if df_h1 is None or len(df_h1) < 20:
-                        continue
-                    tend_h1 = tendencia(df_h1)
-
                     alineado = False
-                    if direccion == 'COMPRA' and tend_m15 == 'ALCISTA' and tend_h1 == 'ALCISTA':
+                    if direccion == 'COMPRA' and tend_m15 == 'ALCISTA':
                         alineado = True
-                    elif direccion == 'VENTA' and tend_m15 == 'BAJISTA' and tend_h1 == 'BAJISTA':
+                    elif direccion == 'VENTA' and tend_m15 == 'BAJISTA':
                         alineado = True
 
                     if not alineado:
-                        print(f"[{par}] {direccion} M15={tend_m15} H1={tend_h1} NO alineado")
                         continue
 
-                    candidatos.append((par, direccion, fuerza, conf, tend_m15, tend_h1))
+                    candidatos.append((par, direccion, fuerza, conf, tend_m15))
 
                 if candidatos:
                     candidatos.sort(key=lambda x: x[2], reverse=True)
-                    par, direccion, fuerza, conf, tend_m15, tend_h1 = candidatos[0]
+                    par, direccion, fuerza, conf, tend_m15 = candidatos[0]
 
                     par_limpio = par.replace("/", "")
                     emoji = "🟢" if direccion == "COMPRA" else "🔴"
@@ -209,18 +202,17 @@ def ciclo_principal_247():
                         f"Fuerza: {fuerza*100:.1f}%\n"
                         f"Confirmaciones: {conf}/5\n"
                         f"M15: {tend_m15}\n"
-                        f"H1: {tend_h1}\n"
                         f"Hora: {ahora.strftime('%H:%M:%S')}\n\n"
                         "PROCEDIMIENTO:\n"
-                        "1. Espera 1 minuto (al minuto 4 de la vela).\n"
-                        "2. Verifica que la vela siga en esa direccion.\n"
-                        "3. Si sigue: entra. Si cambio: no entras.\n"
+                        "1. Espera 1 minuto.\n"
+                        "2. Verifica que la vela siga igual.\n"
+                        "3. Si sigue: entra. Si no: pasa.\n"
                         "4. Vencimiento: 5 minutos."
                     )
                     enviar_alerta_correo(asunto, cuerpo)
-                    print(f"[{ahora.strftime('%H:%M:%S')}] ENVIADO: {par} {direccion} | Candidatos: {len(candidatos)}")
+                    print(f"[{ahora.strftime('%H:%M:%S')}] ENVIADO: {par} {direccion}")
                 else:
-                    print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos en este ciclo.")
+                    print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos.")
 
             time.sleep(10)
         except Exception as e:
