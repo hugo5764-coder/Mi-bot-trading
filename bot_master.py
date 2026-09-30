@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 import requests
 import pandas as pd
 import numpy as np
+import yfinance as yf
 
 # =====================================================================
 # BLOQUE 1: CONFIGURACIÓN
@@ -18,20 +19,18 @@ VENCIMIENTO = 15
 FUERZA_MINIMA = 65.0  
 CONFIRMACIONES_MINIMAS = 4 
 
-# --- FILTRO DE HORARIO (GMT-4, Venezuela) ---
-HORA_INICIO = 8   
-HORA_FIN = 17     
+# --- FILTRO DE HORARIO CORREGIDO (GMT-4, Venezuela) ---
+HORA_INICIO = 6   
+HORA_FIN = 11     
 
 # =====================================================================
-# BLOQUE 2: SISTEMA DE NOTIFICACIONES (Corregido para NTFY)
+# BLOQUE 2: SISTEMA DE NOTIFICACIONES (NTFY)
 # =====================================================================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def enviar_ntfy(mensaje):
     """Envía notificación push a NTFY sin errores de codificación en headers."""
     try:
-        # CORRECCIÓN: Se eliminó el emoji del header Title (solo admite latin-1).
-        # Los emojis se quedan en el cuerpo del mensaje (data) que usa UTF-8.
         headers = {
             "Title": "Alerta de Senal de Trading",
             "Priority": "high",
@@ -129,15 +128,26 @@ def analizar_par(df, par):
     return None
 
 # =====================================================================
-# BLOQUE 4: OBTENCIÓN DE DATOS
+# BLOQUE 4: OBTENCIÓN DE DATOS REALES (YAHOO FINANCE)
 # =====================================================================
 def obtener_datos_mercado(par):
-    fechas = pd.date_range(end=datetime.now(timezone.utc), periods=50, freq='15min')
-    precios = np.random.normal(150, 2, 50).cumsum() + 1000
-    df = pd.DataFrame({'close': precios, 'open': precios - np.random.normal(0, 0.5, 50)})
-    df['high'] = df[['open', 'close']].max(axis=1) + 0.5
-    df['low'] = df[['open', 'close']].min(axis=1) - 0.5
-    return df
+    """Obtiene datos reales de Yahoo Finance para el par en M15."""
+    try:
+        ticker = f"{par}=X"
+        df = yf.download(ticker, period="5d", interval="15m", progress=False)
+        
+        if df.empty:
+            logging.warning(f"⚠️ Yahoo Finance no devolvió datos para {par}")
+            return None
+            
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+            
+        df = df.rename(columns={'Close': 'close', 'Open': 'open', 'High': 'high', 'Low': 'low'})
+        return df
+    except Exception as e:
+        logging.error(f"❌ Error descargando datos de Yahoo Finance para {par}: {e}")
+        return None
 
 # =====================================================================
 # BLOQUE 5: BUCLE PRINCIPAL
@@ -148,14 +158,17 @@ def escanear_mercado():
     hora_ve = hora_utc.astimezone(zona_ve)
     
     if not (HORA_INICIO <= hora_ve.hour < HORA_FIN):
-        logging.info(f"💤 Fuera de horario de trading ({hora_ve.strftime('%H:%M')}).")
-        time.sleep(300)  # Pausa de 5 minutos para evitar spam de logs en Railway
+        logging.info(f"💤 Fuera de horario de trading ({hora_ve.strftime('%H:%M')} - Activo de 06:00 a 11:00).")
+        time.sleep(300) 
         return
 
-    logging.info("🔍 Analizando pares...")
+    logging.info("🔍 Analizando pares con datos reales...")
     for par in PARES_A_ANALIZAR:
         try:
             df = obtener_datos_mercado(par)
+            if df is None:
+                continue
+                
             señal = analizar_par(df, par)
             
             if señal:
@@ -169,7 +182,7 @@ def escanear_mercado():
                 )
                 
                 if enviar_ntfy(mensaje):
-                    logging.info(f"🚀 Señal enviada: {par} {señal['direccion']}")
+                    logging.info(f"🚀 Señal real enviada: {par} {señal['direccion']}")
                 else:
                     logging.warning(f"⚠️ Señal abortada para {par} por fallo en NTFY.")
                 
@@ -193,7 +206,7 @@ def esperar_proxima_vela():
     time.sleep(segundos_totales)
 
 if __name__ == "__main__":
-    logging.info("🤖 Iniciando Bot de Trading v36.2 - Corregido")
+    logging.info("🤖 Iniciando Bot de Trading v36.3 - Horario 6-11 AM y Yahoo Finance")
     
     while True:
         try:
