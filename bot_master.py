@@ -1,227 +1,226 @@
-import os
-import json  # <--- ESTA LÍNEA ES VITAL, NO LA BORRES
-import requests
 import time
-from datetime import datetime
-import pytz
+import logging
+from datetime import datetime, timedelta
+import requests
 import pandas as pd
 import numpy as np
 
-TWELVE_DATA_API_KEY = "f0c27fa81ca04860bb8857c44091ad5b"
-NTFY_TOPIC = "hugo-bot-trading-2026"
+# =====================================================================
+# BLOQUE 1: CONFIGURACIÓN (Edita esto según tus necesidades)
+# =====================================================================
 
-TZ_UTC4 = pytz.timezone('America/Caracas')
+# --- CONFIGURACIÓN DE NTFY (App Android) ---
+# CAMBIA ESTO por un nombre único, inventado por ti. Ej: "hugo_bot_2026_xyz"
+NTFY_TOPIC = "hugo_bot_trading_2026" 
+NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}"
 
-PARES_DIVISAS = ["GBP/JPY", "USD/JPY", "USD/CAD", "EUR/USD"]
+# --- CONFIGURACIÓN DE TRADING ---
+PARES_A_ANALIZAR = ["USDJPY", "USDCAD", "EURUSD", "GBPJPY"]
+TEMPORALIDAD = "15m" # Análisis en velas de 15 minutos
+VENCIMIENTO = 15      # CORREGIDO: Vencimiento de 15 min para que coincida con M15
+FUERZA_MINIMA = 65.0  # Ignorar señales con fuerza menor al 65%
+CONFIRMACIONES_MINIMAS = 4 # Exigir 4/5 o 5/5
 
-HORA_INICIO = 6
-HORA_FIN = 11
+# --- FILTRO DE HORARIO (GMT-4, Venezuela) ---
+# Evitar horas muertas (ej. 5:00 AM a 7:30 AM)
+HORA_INICIO = 8   # 8:00 AM
+HORA_FIN = 17     # 5:00 PM
 
-ultimo_envio_ts = 0
+# =====================================================================
+# BLOQUE 2: SISTEMA DE NOTIFICACIONES (Solo NTFY)
+# =====================================================================
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def obtener_velas(par, intervalo):
-    url = "https://api.twelvedata.com/time_series"
-    params = {
-        "symbol": par,
-        "interval": intervalo,
-        "outputsize": 100,
-        "apikey": TWELVE_DATA_API_KEY,
-        "timezone": "America/Caracas"
-    }
+def enviar_ntfy(mensaje):
+    """
+    Envía notificación push a NTFY. 
+    Si falla (Error 429), retorna False y aborta la señal para evitar 'señales fantasma'.
+    """
     try:
-        r = requests.get(url, params=params, timeout=10)
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        if data.get("status") == "error":
-            return None
-        values = data.get("values", [])
-        if len(values) < 20:
-            return None
-        rows = []
-        for v in reversed(values):
-            rows.append({
-                'datetime': v['datetime'],
-                'open': float(v['open']),
-                'high': float(v['high']),
-                'low': float(v['low']),
-                'close': float(v['close']),
-                'volume': float(v.get('volume', 0)) if v.get('volume') else 0
-            })
-        df = pd.DataFrame(rows)
-        return df
-    except Exception as e:
-        print(f"Error {par} {intervalo}: {e}")
-        return None
-
-def enviar_alerta_ntfy(asunto, mensaje):
-    try:
-        payload = {
-            "topic": NTFY_TOPIC,
-            "title": asunto,
-            "message": mensaje,
-            "priority": 5,
-            "tags": ["rotating_light", "chart_with_upwards_trend"]
-        }
-        
-        # EL FIX ESTÁ AQUÍ: Forzamos UTF-8 para que los emojis no rompan el bot
-        data_json = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-        
         headers = {
-            "Content-Type": "application/json; charset=utf-8"
+            "Title": "🚨 Señal de Trading",
+            "Priority": "high",
+            "Tags": "chart_with_upwards_trend"
         }
+        response = requests.post(NTFY_URL, data=mensaje.encode(encoding='utf-8'), headers=headers)
         
-        r = requests.post(
-            "https://ntfy.sh/",
-            data=data_json,
-            headers=headers,
-            timeout=10
-        )
-        if r.status_code == 200:
-            print(f"[{datetime.now(TZ_UTC4).strftime('%H:%M:%S')}] NTFY OK")
-        else:
-            print(f"Error NTFY: {r.status_code} - {r.text[:100]}")
+        if response.status_code == 429:
+            logging.error("❌ Error NTFY: 429 - Cuota diaria agotada. Abortando señal.")
+            return False
+        response.raise_for_status()
+        return True
     except Exception as e:
-        # Si falla el envío, el bot NO se apaga, solo imprime el error
-        print(f"Error NTFY (El bot sigue vivo): {e}")
+        logging.error(f"❌ Error crítico en NTFY: {e}")
+        return False
+
+# =====================================================================
+# BLOQUE 3: ESTRATEGIA Y ANÁLISIS TÉCNICO
+# =====================================================================
 
 def calcular_indicadores(df):
+    """Calcula EMA de 9, EMA de 21 y RSI de 14."""
+    # EMAs
     df['EMA_9'] = df['close'].ewm(span=9, adjust=False).mean()
     df['EMA_21'] = df['close'].ewm(span=21, adjust=False).mean()
-    df['EMA_50'] = df['close'].ewm(span=50, adjust=False).mean()
+    
+    # RSI
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
-    exp1 = df['close'].ewm(span=12, adjust=False).mean()
-    exp2 = df['close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = exp1 - exp2
-    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
+    
     return df
 
-def tendencia(df):
+def analizar_par(df, par):
+    """Analiza el par y devuelve una señal si cumple con los filtros estrictos."""
+    if len(df) < 30:
+        return None
+
     df = calcular_indicadores(df)
-    u = df.iloc[-1]
-    if u['EMA_9'] > u['EMA_21']:
-        return 'ALCISTA'
-    if u['EMA_9'] < u['EMA_21']:
-        return 'BAJISTA'
-    return 'LATERAL'
-
-def analizar_vela_en_formacion(df_m5):
-    vela = df_m5.iloc[-1]
-    rango = vela['high'] - vela['low']
-    if rango <= 0:
-        return None
+    ultima_vela = df.iloc[-1]
+    vela_anterior = df.iloc[-2]
     
-    cuerpo = abs(vela['close'] - vela['open'])
-    prop_cuerpo = cuerpo / rango
-    mecha_sup = vela['high'] - max(vela['close'], vela['open'])
-    mecha_inf = min(vela['close'], vela['open']) - vela['low']
-    mecha_total = (mecha_sup + mecha_inf) / rango
+    confirmaciones = 0
+    señales = []
+    
+    # 1. Evaluar Indicadores (5 posibles confirmaciones)
+    # EMA Cross
+    if ultima_vela['EMA_9'] > ultima_vela['EMA_21']:
+        confirmaciones += 1; señales.append("EMA_ALCISTA")
+    elif ultima_vela['EMA_9'] < ultima_vela['EMA_21']:
+        confirmaciones += 1; señales.append("EMA_BAJISTA")
+        
+    # RSI
+    if ultima_vela['RSI'] < 35: # Sobreventa
+        confirmaciones += 1; señales.append("RSI_SOBREVENTA")
+    elif ultima_vela['RSI'] > 65: # Sobrecompra
+        confirmaciones += 1; señales.append("RSI_SOBRECOMPRA")
+        
+    # Precio vs EMAs
+    if ultima_vela['close'] > ultima_vela['EMA_9']:
+        confirmaciones += 1; señales.append("PRECIO_SOBRE_EMA9")
+    elif ultima_vela['close'] < ultima_vela['EMA_9']:
+        confirmaciones += 1; señales.append("PRECIO_BAJO_EMA9")
+        
+    # Vela anterior (Momentum)
+    if vela_anterior['close'] > vela_anterior['open']:
+        confirmaciones += 1; señales.append("VELA_ANTERIOR_VERDE")
+    elif vela_anterior['close'] < vela_anterior['open']:
+        confirmaciones += 1; señales.append("VELA_ANTERIOR_ROJA")
 
-    if vela['close'] > vela['open']:
-        direccion = 'COMPRA'
-    elif vela['close'] < vela['open']:
-        direccion = 'VENTA'
+    # 2. Determinar dirección
+    if "EMA_ALCISTA" in señales and "PRECIO_SOBRE_EMA9" in señales:
+        direccion = "COMPRA"
+    elif "EMA_BAJISTA" in señales and "PRECIO_BAJO_EMA9" in señales:
+        direccion = "VENTA"
     else:
+        return None # Señal mixta, no operar
+
+    # 3. Calcular Fuerza (0-100%)
+    fuerza = 50.0
+    if direccion == "COMPRA":
+        if ultima_vela['RSI'] < 40: fuerza += 20
+        if ultima_vela['EMA_9'] > ultima_vela['EMA_21']: fuerza += 20
+        if vela_anterior['close'] > vela_anterior['open']: fuerza += 10
+    else:
+        if ultima_vela['RSI'] > 60: fuerza += 20
+        if ultima_vela['EMA_9'] < ultima_vela['EMA_21']: fuerza += 20
+        if vela_anterior['close'] < vela_anterior['open']: fuerza += 10
+
+    # 4. FILTRO ANTI-TRAMPAS (Fakeout) - ¡Esto te salvó hoy!
+    # Si la señal es VENTA, pero la vela actual (la que se está formando) está verde, ABORTAR.
+    if direccion == "VENTA" and ultima_vela['close'] > ultima_vela['open']:
+        logging.info(f"🚫 {par}: Señal VENTA abortada. Vela actual verde (Falso positivo).")
+        return None
+    # Si la señal es COMPRA, pero la vela actual está roja, ABORTAR.
+    if direccion == "COMPRA" and ultima_vela['close'] < ultima_vela['open']:
+        logging.info(f"🚫 {par}: Señal COMPRA abortada. Vela actual roja (Falso positivo).")
         return None
 
-    confirmaciones = 0
-    if prop_cuerpo >= 0.40: confirmaciones += 1
-    if mecha_total <= 0.30: confirmaciones += 1
-
-    posicion_cierre = (vela['close'] - vela['low']) / rango
-    if direccion == 'COMPRA' and posicion_cierre >= 0.68: confirmaciones += 1
-    elif direccion == 'VENTA' and posicion_cierre <= 0.32: confirmaciones += 1
-
-    if not pd.isna(vela['RSI']):
-        if direccion == 'COMPRA' and 50 < vela['RSI'] < 82: confirmaciones += 1
-        elif direccion == 'VENTA' and 18 < vela['RSI'] < 50: confirmaciones += 1
-
-    if not pd.isna(vela['MACD_Hist']):
-        if direccion == 'COMPRA' and vela['MACD_Hist'] > 0: confirmaciones += 1
-        elif direccion == 'VENTA' and vela['MACD_Hist'] < 0: confirmaciones += 1
-
-    if confirmaciones >= 3:
-        return (direccion, prop_cuerpo, confirmaciones)
+    # 5. Aplicar filtros de calidad
+    if fuerza >= FUERZA_MINIMA and confirmaciones >= CONFIRMACIONES_MINIMAS:
+        return {
+            "par": par,
+            "direccion": direccion,
+            "fuerza": round(fuerza, 1),
+            "confirmaciones": f"{confirmaciones}/5",
+            "precio": ultima_vela['close']
+        }
+    
     return None
 
-def ciclo_principal_247():
-    global ultimo_envio_ts
-    print(f"[{datetime.now(TZ_UTC4)}] Bot v35 - NTFY JSON (6AM a 11AM)")
-    while True:
+# =====================================================================
+# BLOQUE 4: OBTENCIÓN DE DATOS (REEMPLAZAR CON API REAL)
+# =====================================================================
+def obtener_datos_mercado(par):
+    """
+    ⚠️ ATENCIÓN: Aquí debes conectar tu API de datos real (TwelveData, Polygon, etc.)
+    Actualmente genera datos aleatorios para que el bot no crashee en Railway.
+    """
+    # --- SIMULACIÓN (Borrar cuando tengas API real) ---
+    fechas = pd.date_range(end=datetime.now(), periods=50, freq='15min')
+    precios = np.random.normal(150, 2, 50).cumsum() + 1000
+    df = pd.DataFrame({'close': precios, 'open': precios - np.random.normal(0, 0.5, 50)})
+    df['high'] = df[['open', 'close']].max(axis=1) + 0.5
+    df['low'] = df[['open', 'close']].min(axis=1) - 0.5
+    return df
+
+# =====================================================================
+# BLOQUE 5: BUCLE PRINCIPAL (El cerebro del bot)
+# =====================================================================
+def escanear_mercado():
+    # Calcular hora actual en Venezuela (GMT-4)
+    hora_utc = datetime.utcnow()
+    hora_ve = hora_utc - timedelta(hours=4)
+    
+    # Filtro de Horario
+    if not (HORA_INICIO <= hora_ve.hour < HORA_FIN):
+        logging.info(f"💤 Fuera de horario de trading ({hora_ve.strftime('%H:%M')}). Esperando...")
+        return
+
+    logging.info("🔍 Analizando pares...")
+    for par in PARES_A_ANALIZAR:
         try:
-            ahora = datetime.now(TZ_UTC4)
-            minuto = ahora.minute
-            segundo = ahora.second
-            hora_actual = ahora.hour
-            dia_semana = ahora.weekday()
-            ahora_ts = time.time()
-            en_horario = (0 <= dia_semana <= 4) and (HORA_INICIO <= hora_actual < HORA_FIN)
-
-            minutos_analisis = [3, 18, 33, 48]
-
-            if (minuto in minutos_analisis) and (segundo < 20):
-                ultimo_envio_ts = ahora_ts
-                if not en_horario:
-                    continue
-
-                print(f"[{ahora.strftime('%H:%M:%S')}] Analizando {len(PARES_DIVISAS)} pares...")
-                candidatos = []
-
-                for par in PARES_DIVISAS:
-                    df_m5 = obtener_velas(par, "5min")
-                    if df_m5 is None or len(df_m5) < 20:
-                        continue
-                    df_m5 = calcular_indicadores(df_m5)
-                    resultado = analizar_vela_en_formacion(df_m5)
-                    if not resultado:
-                        continue
-                    direccion, fuerza, conf = resultado
-
-                    df_m15 = obtener_velas(par, "15min")
-                    if df_m15 is None or len(df_m15) < 20:
-                        continue
-                    tend_m15 = tendencia(df_m15)
-
-                    alineado = False
-                    if direccion == 'COMPRA' and tend_m15 == 'ALCISTA':
-                        alineado = True
-                    elif direccion == 'VENTA' and tend_m15 == 'BAJISTA':
-                        alineado = True
-
-                    if not alineado:
-                        continue
-
-                    candidatos.append((par, direccion, fuerza, conf, tend_m15))
-
-                if candidatos:
-                    candidatos.sort(key=lambda x: x[2], reverse=True)
-                    par, direccion, fuerza, conf, tend_m15 = candidatos[0]
-
-                    par_limpio = par.replace("/", "")
-                    emoji = "🟢" if direccion == "COMPRA" else "🔴"
-                    asunto = f"{emoji} {par_limpio} {direccion} | Fuerza {fuerza*100:.0f}%"
-                    cuerpo = (
-                        f"{emoji} {par} {direccion}\n"
-                        f"Fuerza: {fuerza*100:.1f}%\n"
-                        f"Confirmaciones: {conf}/5\n"
-                        f"M15: {tend_m15}\n"
-                        f"Hora: {ahora.strftime('%H:%M:%S')}\n\n"
-                        f"ENTRA AHORA (CALL si COMPRA, PUT si VENTA)\n"
-                        f"Vencimiento: 5 min"
-                    )
-                    enviar_alerta_ntfy(asunto, cuerpo)
+            df = obtener_datos_mercado(par)
+            señal = analizar_par(df, par)
+            
+            if señal:
+                # Construir mensaje de alerta
+                emoji = "🟢" if señal['direccion'] == "COMPRA" else "🔴"
+                mensaje = (
+                    f"{emoji} {señal['par']} {señal['direccion']} | Fuerza {señal['fuerza']}%\n\n"
+                    f"📊 Confirmaciones: {señal['confirmaciones']}\n"
+                    f"⏳ Vencimiento: {VENCIMIENTO} min\n"
+                    f"💵 Precio entrada: {señal['precio']:.5f}\n\n"
+                    f"👉 ENTRA AHORA ({'CALL' if señal['direccion'] == 'COMPRA' else 'PUT'})"
+                )
+                
+                # Enviar alerta (Si NTFY falla, NO se envía nada)
+                if enviar_ntfy(mensaje):
+                    logging.info(f"🚀 Señal enviada: {par} {señal['direccion']}")
                 else:
-                    print(f"[{ahora.strftime('%H:%M:%S')}] Sin candidatos.")
-
-            time.sleep(5)
+                    logging.warning(f"⚠️ Señal abortada para {par} por fallo en NTFY.")
+                
         except Exception as e:
-            print(f"Error critico: {e}")
-            time.sleep(5)
+            logging.error(f"Error analizando {par}: {e}")
 
 if __name__ == "__main__":
-    ciclo_principal_247()
+    logging.info("🤖 Iniciando Bot de Trading v36 - Solo NTFY")
+    
+    # Bucle infinito controlado
+    while True:
+        try:
+            # Escanear mercado
+            escanear_mercado()
+            
+            # Esperar 15 minutos (900 segundos) para la próxima vela de M15
+            logging.info("⏳ Esperando 15 minutos para la próxima vela...")
+            time.sleep(900) 
+            
+        except KeyboardInterrupt:
+            logging.info("Bot detenido por el usuario.")
+            break
+        except Exception as e:
+            logging.error(f"Error en el bucle principal: {e}")
+            time.sleep(60) # Esperar 1 minuto si hay error antes de reintentar
