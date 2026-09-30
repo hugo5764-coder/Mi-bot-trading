@@ -18,7 +18,7 @@ TEMPORALIDAD = "5m"
 VENCIMIENTO = 5      
 FUERZA_MINIMA = 50.0  
 CONFIRMACIONES_MINIMAS = 3  
-MAX_ALERTAS_DIARIAS = 15    
+MAX_ALERTAS_DIARIAS = 100   # Amplio margen de seguridad
 
 # --- FILTRO DE HORARIO Y DÍAS (GMT-4, Venezuela) ---
 HORA_INICIO = 6   
@@ -31,16 +31,16 @@ ultimo_bloque_preventivo = None
 ultimo_bloque_oficial = None
 
 # =====================================================================
-# BLOQUE 2: SISTEMA DE NOTIFICACIONES (NTFY)
+# BLOQUE 2: SISTEMA DE NOTIFICACIONES (NTFY CONSOLIDADO)
 # =====================================================================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def enviar_ntfy(mensaje, titulo="Alerta de Trading M5"):
-    """Envía notificación push a NTFY de forma segura."""
+    """Envía una notificación consolidada a NTFY."""
     global contador_alertas_hoy
     try:
         if contador_alertas_hoy >= MAX_ALERTAS_DIARIAS:
-            logging.warning("⚠️ Límite diario de 15 alertas alcanzado. Pausando envíos por hoy.")
+            logging.warning("⚠️ Límite diario de alertas alcanzado.")
             return False
 
         headers = {
@@ -51,7 +51,7 @@ def enviar_ntfy(mensaje, titulo="Alerta de Trading M5"):
         response = requests.post(NTFY_URL, data=mensaje.encode(encoding='utf-8'), headers=headers)
         
         if response.status_code == 429:
-            logging.error("❌ Error NTFY: 429 - Cuota diaria agotada. Abortando señal.")
+            logging.error("❌ Error NTFY: 429 - Límite de tasa excedido temporalmente.")
             return False
             
         response.raise_for_status()
@@ -88,24 +88,24 @@ def analizar_par(df, par):
     estrategias_activas = []
     
     if ultima_vela['EMA_9'] > ultima_vela['EMA_21']:
-        confirmaciones += 1; estrategias_activas.append("Tendencia Alcista (EMA)")
+        confirmaciones += 1; estrategias_activas.append("EMA Alcista")
     elif ultima_vela['EMA_9'] < ultima_vela['EMA_21']:
-        confirmaciones += 1; estrategias_activas.append("Tendencia Bajista (EMA)")
+        confirmaciones += 1; estrategias_activas.append("EMA Bajista")
         
     if ultima_vela['RSI'] < 40:
-        confirmaciones += 1; estrategias_activas.append("RSI en Sobreventa")
+        confirmaciones += 1; estrategias_activas.append("RSI Sobreventa")
     elif ultima_vela['RSI'] > 60:
-        confirmaciones += 1; estrategias_activas.append("RSI en Sobrecompra")
+        confirmaciones += 1; estrategias_activas.append("RSI Sobrecompra")
         
     if ultima_vela['close'] > ultima_vela['EMA_9']:
-        confirmaciones += 1; estrategias_activas.append("Precio sobre EMA9")
+        confirmaciones += 1; estrategias_activas.append("Precio > EMA9")
     elif ultima_vela['close'] < ultima_vela['EMA_9']:
-        confirmaciones += 1; estrategias_activas.append("Precio bajo EMA9")
+        confirmaciones += 1; estrategias_activas.append("Precio < EMA9")
         
     if vela_anterior['close'] > vela_anterior['open']:
-        confirmaciones += 1; estrategias_activas.append("Momentum Verde Previo")
+        confirmaciones += 1; estrategias_activas.append("Momentum Verde")
     elif vela_anterior['close'] < vela_anterior['open']:
-        confirmaciones += 1; estrategias_activas.append("Momentum Rojo Previo")
+        confirmaciones += 1; estrategias_activas.append("Momentum Rojo")
 
     if ultima_vela['EMA_9'] > ultima_vela['EMA_21'] and ultima_vela['close'] > ultima_vela['EMA_9']:
         direccion = "COMPRA"
@@ -150,7 +150,7 @@ def obtener_datos_mercado(par):
         return None
 
 # =====================================================================
-# BLOQUE 5: BUCLE PRINCIPAL CON CONTROL ESTRICTO DE BLOQUES M5
+# BLOQUE 5: BUCLE PRINCIPAL CON CONSOLIDACIÓN DE SEÑALES
 # =====================================================================
 def ejecutar_ciclo_trading():
     global dia_actual_registro, contador_alertas_hoy, ultimo_bloque_preventivo, ultimo_bloque_oficial
@@ -164,7 +164,7 @@ def ejecutar_ciclo_trading():
         contador_alertas_hoy = 0
 
     if hora_ve.weekday() > 4:
-        logging.info("💤 Fin de semana. El mercado de divisas está cerrado...")
+        logging.info("💤 Fin de semana. Mercado cerrado...")
         time.sleep(3600)
         return
 
@@ -176,62 +176,63 @@ def ejecutar_ciclo_trading():
     minutos = hora_ve.minute
     segundos = hora_ve.second
     
-    # Identificador único del bloque M5 actual
     bloque_id = f"{hora_ve.hour}:{minutos - (minutos % 5)}"
-    
     minutos_en_bloque = minutos % 5
 
-    # --- FASE 1: ALERTA PREVENTIVA (Exactamente en el minuto 4 del bloque) ---
+    # --- FASE 1: AVISO PREVENTIVO CONSOLIDADO (Minuto 4) ---
     if minutos_en_bloque == 4 and ultimo_bloque_preventivo != bloque_id:
         ultimo_bloque_preventivo = bloque_id
-        logging.info(f"⚠️ Ejecutando escaneo preventivo para el bloque {bloque_id}...")
+        logging.info(f"⚠️ Evaluando escaneo preventivo para el bloque {bloque_id}...")
         
+        señales_preventivas = []
         for par in PARES_A_ANALIZAR:
             df = obtener_datos_mercado(par)
             if df is not None:
                 señal = analizar_par(df, par)
                 if señal:
-                    emoji = "🟢" if señal['direccion'] == "COMPRA" else "🔴"
-                    msg_prev = (
-                        f"⚠️ PREPARATE (1 MIN) -> {emoji} {señal['par']} {señal['direccion']}\n"
-                        f"💪 Fuerza: {señal['fuerza']}% | Conf: {señal['confirmaciones']}\n"
-                        f"💵 Precio est: {señal['precio']:.5f}\n\n"
-                        f"⏱️ Prepárate en tu broker para M5."
-                    )
-                    enviar_ntfy(msg_prev, titulo="Aviso Preventivo M5")
+                    señales_preventivas.append(señal)
+        
+        if señales_preventivas:
+            msg = "⚠️ AVISO PREVENTIVO (Faltan 1 min)\n\n"
+            for s in señales_preventivas:
+                emoji = "🟢" if s['direccion'] == "COMPRA" else "🔴"
+                msg += f"{emoji} {s['par']} {s['direccion']} | Fuerza: {s['fuerza']}%\n"
+            
+            enviar_ntfy(msg, titulo="Prepararse M5")
+            logging.info("🚀 Alerta preventiva consolidada enviada.")
         
         time.sleep(10)
         return
 
-    # --- FASE 2: SEÑAL OFICIAL (Exactamente al inicio del minuto 0 del bloque) ---
+    # --- FASE 2: SEÑAL OFICIAL CONSOLIDADA (Minuto 0) ---
     if minutos_en_bloque == 0 and segundos <= 15 and ultimo_bloque_oficial != bloque_id:
         ultimo_bloque_oficial = bloque_id
-        logging.info(f"🔍 Escaneando señal oficial al cierre/apertura del bloque {bloque_id}...")
+        logging.info(f"🔍 Evaluando señal oficial para el bloque {bloque_id}...")
         
+        señales_oficiales = []
         for par in PARES_A_ANALIZAR:
             try:
                 df = obtener_datos_mercado(par)
-                if df is None:
-                    continue
-                    
-                señal = analizar_par(df, par)
-                
-                if señal:
-                    emoji = "🟢" if señal['direccion'] == "COMPRA" else "🔴"
-                    mensaje = (
-                        f"{emoji} {señal['par']} {señal['direccion']} | Fuerza {señal['fuerza']}%\n\n"
-                        f"📊 Confirmaciones: {señal['confirmaciones']}\n"
-                        f"🧠 Estrategias: {señal['estrategias']}\n"
-                        f"⏳ Vencimiento: {VENCIMIENTO} min (M5)\n"
-                        f"💵 Precio entrada: {señal['precio']:.5f}\n\n"
-                        f"👉 ENTRA AHORA ({'CALL' if señal['direccion'] == 'COMPRA' else 'PUT'})"
-                    )
-                    
-                    if enviar_ntfy(mensaje, titulo=f"Señal Oficial M5 ({contador_alertas_hoy+1}/15)"):
-                        logging.info(f"🚀 Alerta oficial enviada: {par} {señal['direccion']}")
-                    
+                if df is not None:
+                    señal = analizar_par(df, par)
+                    if señal:
+                        señales_oficiales.append(señal)
             except Exception as e:
                 logging.error(f"Error analizando {par}: {e}")
+        
+        if señales_oficiales:
+            msg = f"🚀 SEÑALES OFICIALES M5 ({bloque_id})\n\n"
+            for s in señales_oficiales:
+                emoji = "🟢" if s['direccion'] == "COMPRA" else "🔴"
+                msg += f"{emoji} {s['par']} ➔ {s['direccion']}\n"
+                msg += f"   💪 Fuerza: {s['fuerza']}% ({s['confirmaciones']})\n"
+                msg += f"   💵 Precio: {s['precio']:.5f}\n"
+                msg += f"   🧠 Estrategias: {s['estrategias']}\n\n"
+            
+            msg += f"⏳ Vencimiento: {VENCIMIENTO} min. ¡ENTRA AHORA!"
+            
+            if enviar_ntfy(msg, titulo=f"Señales M5 - Bloque {bloque_id}"):
+                logging.info("🚀 Alerta oficial consolidada enviada con éxito.")
         
         time.sleep(10)
         return
@@ -239,7 +240,7 @@ def ejecutar_ciclo_trading():
     time.sleep(5)
 
 if __name__ == "__main__":
-    logging.info("🤖 Iniciando Bot v36.7 - M5 Sincronización Exacta por Bloques")
+    logging.info("🤖 Iniciando Bot v36.9 - Alertas Consolidadas por Bloque M5")
     
     while True:
         try:
