@@ -6,14 +6,12 @@ import pandas as pd
 import numpy as np
 
 # =====================================================================
-# BLOQUE 1: CONFIGURACIÓN (Edita esto según tus necesidades)
+# BLOQUE 1: CONFIGURACIÓN
 # =====================================================================
 
-# --- CONFIGURACIÓN DE NTFY (App Android) ---
-NTFY_TOPIC = "hugo_bot_trading_2026" # Asegúrate de que este sea el topic que pusiste en la app
+NTFY_TOPIC = "hugo_bot_trading_2026"
 NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}"
 
-# --- CONFIGURACIÓN DE TRADING ---
 PARES_A_ANALIZAR = ["USDJPY", "USDCAD", "EURUSD", "GBPJPY"]
 TEMPORALIDAD = "15m" 
 VENCIMIENTO = 15      
@@ -25,15 +23,17 @@ HORA_INICIO = 8
 HORA_FIN = 17     
 
 # =====================================================================
-# BLOQUE 2: SISTEMA DE NOTIFICACIONES (Solo NTFY)
+# BLOQUE 2: SISTEMA DE NOTIFICACIONES (Corregido para NTFY)
 # =====================================================================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def enviar_ntfy(mensaje):
-    """Envía notificación push a NTFY. Si falla (429), aborta la señal."""
+    """Envía notificación push a NTFY sin errores de codificación en headers."""
     try:
+        # CORRECCIÓN: Se eliminó el emoji del header Title (solo admite latin-1).
+        # Los emojis se quedan en el cuerpo del mensaje (data) que usa UTF-8.
         headers = {
-            "Title": "🚨 Señal de Trading",
+            "Title": "Alerta de Senal de Trading",
             "Priority": "high",
             "Tags": "chart_with_upwards_trend"
         }
@@ -76,7 +76,6 @@ def analizar_par(df, par):
     confirmaciones = 0
     señales = []
     
-    # 1. Evaluar Indicadores (5 posibles confirmaciones)
     if ultima_vela['EMA_9'] > ultima_vela['EMA_21']:
         confirmaciones += 1; señales.append("EMA_ALCISTA")
     elif ultima_vela['EMA_9'] < ultima_vela['EMA_21']:
@@ -97,7 +96,6 @@ def analizar_par(df, par):
     elif vela_anterior['close'] < vela_anterior['open']:
         confirmaciones += 1; señales.append("VELA_ANTERIOR_ROJA")
 
-    # 2. Determinar dirección
     if "EMA_ALCISTA" in señales and "PRECIO_SOBRE_EMA9" in señales:
         direccion = "COMPRA"
     elif "EMA_BAJISTA" in señales and "PRECIO_BAJO_EMA9" in señales:
@@ -105,7 +103,6 @@ def analizar_par(df, par):
     else:
         return None 
 
-    # 3. Calcular Fuerza (0-100%)
     fuerza = 50.0
     if direccion == "COMPRA":
         if ultima_vela['RSI'] < 40: fuerza += 20
@@ -116,15 +113,11 @@ def analizar_par(df, par):
         if ultima_vela['EMA_9'] < ultima_vela['EMA_21']: fuerza += 20
         if vela_anterior['close'] < vela_anterior['open']: fuerza += 10
 
-    # 4. FILTRO ANTI-TRAMPAS (Fakeout)
     if direccion == "VENTA" and ultima_vela['close'] > ultima_vela['open']:
-        logging.info(f"🚫 {par}: Señal VENTA abortada. Vela actual verde (Falso positivo).")
         return None
     if direccion == "COMPRA" and ultima_vela['close'] < ultima_vela['open']:
-        logging.info(f"🚫 {par}: Señal COMPRA abortada. Vela actual roja (Falso positivo).")
         return None
 
-    # 5. Aplicar filtros de calidad
     if fuerza >= FUERZA_MINIMA and confirmaciones >= CONFIRMACIONES_MINIMAS:
         return {
             "par": par,
@@ -136,13 +129,9 @@ def analizar_par(df, par):
     return None
 
 # =====================================================================
-# BLOQUE 4: OBTENCIÓN DE DATOS (AQUÍ DEBES CONECTAR TU API REAL)
+# BLOQUE 4: OBTENCIÓN DE DATOS
 # =====================================================================
 def obtener_datos_mercado(par):
-    """
-    ⚠️ REEMPLAZAR CON API REAL (TwelveData, Polygon, etc.)
-    Simulación para que el bot no crashee.
-    """
     fechas = pd.date_range(end=datetime.now(timezone.utc), periods=50, freq='15min')
     precios = np.random.normal(150, 2, 50).cumsum() + 1000
     df = pd.DataFrame({'close': precios, 'open': precios - np.random.normal(0, 0.5, 50)})
@@ -151,17 +140,16 @@ def obtener_datos_mercado(par):
     return df
 
 # =====================================================================
-# BLOQUE 5: BUCLE PRINCIPAL (Sincronizado con el reloj)
+# BLOQUE 5: BUCLE PRINCIPAL
 # =====================================================================
 def escanear_mercado():
-    # Calcular hora actual en Venezuela (GMT-4) correctamente
     hora_utc = datetime.now(timezone.utc)
     zona_ve = timezone(timedelta(hours=-4))
     hora_ve = hora_utc.astimezone(zona_ve)
     
-    # Filtro de Horario
     if not (HORA_INICIO <= hora_ve.hour < HORA_FIN):
-        logging.info(f"💤 Fuera de horario de trading ({hora_ve.strftime('%H:%M')}). Esperando...")
+        logging.info(f"💤 Fuera de horario de trading ({hora_ve.strftime('%H:%M')}).")
+        time.sleep(300)  # Pausa de 5 minutos para evitar spam de logs en Railway
         return
 
     logging.info("🔍 Analizando pares...")
@@ -189,25 +177,23 @@ def escanear_mercado():
             logging.error(f"Error analizando {par}: {e}")
 
 def esperar_proxima_vela():
-    """Calcula los segundos exactos para despertar en el próximo minuto 00, 15, 30 o 45."""
     ahora = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=-4)))
     minutos = ahora.minute
     segundos = ahora.second
     
-    # Calcular cuántos minutos faltan para el próximo bloque de 15 min
     minutos_faltantes = (15 - (minutos % 15)) % 15
     if minutos_faltantes == 0 and segundos == 0:
-        return 0 # Ya estamos en el momento exacto
+        return 
     
     segundos_totales = (minutos_faltantes * 60) - segundos
     if segundos_totales <= 0:
-        segundos_totales += 900 # Si ya pasó, esperar al siguiente ciclo
+        segundos_totales += 900 
         
     logging.info(f"⏳ Esperando {segundos_totales} segundos para la próxima vela M15...")
     time.sleep(segundos_totales)
 
 if __name__ == "__main__":
-    logging.info("🤖 Iniciando Bot de Trading v36.1 - Sincronizado")
+    logging.info("🤖 Iniciando Bot de Trading v36.2 - Corregido")
     
     while True:
         try:
