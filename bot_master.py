@@ -7,7 +7,7 @@ import numpy as np
 import yfinance as yf
 
 # =====================================================================
-# BLOQUE 1: CONFIGURACIÓN PROFesioNAL M5
+# BLOQUE 1: CONFIGURACIÓN PROFESIONAL M5
 # =====================================================================
 
 NTFY_TOPIC = "hugo_bot_trading_2026"
@@ -17,16 +17,18 @@ PARES_A_ANALIZAR = ["USDJPY", "USDCAD", "EURUSD", "GBPJPY"]
 TEMPORALIDAD = "5m" 
 VENCIMIENTO = 5      
 FUERZA_MINIMA = 50.0  
-CONFIRMACIONES_MINIMAS = 3  # Mínimo 3 estrategias/indicadores competentes
-MAX_ALERTAS_DIARIAS = 15    # Control de cuota para evitar error 429 en Ntfy
+CONFIRMACIONES_MINIMAS = 3  
+MAX_ALERTAS_DIARIAS = 15    
 
 # --- FILTRO DE HORARIO Y DÍAS (GMT-4, Venezuela) ---
 HORA_INICIO = 6   
 HORA_FIN = 11     
 
-# Variable global para control diario de alertas
+# Variables de control de estado y memoria de velas
 contador_alertas_hoy = 0
 dia_actual_registro = None
+ultimas_velas_oficiales = {par: None for par in PARES_A_ANALIZAR}
+ultimas_velas_preventivas = {par: None for par in PARES_A_ANALIZAR}
 
 # =====================================================================
 # BLOQUE 2: SISTEMA DE NOTIFICACIONES (NTFY)
@@ -60,11 +62,10 @@ def enviar_ntfy(mensaje, titulo="Alerta de Trading M5"):
         return False
 
 # =====================================================================
-# BLOQUE 3: ESTRATEGIA TÉCNICA MULTI-INDICADOR (3+ ESTRATEGIAS)
+# BLOQUE 3: ESTRATEGIA TÉCNICA MULTI-INDICADOR
 # =====================================================================
 
 def calcular_indicadores(df):
-    """Calcula EMA de 9, EMA de 21 y RSI de 14."""
     df['EMA_9'] = df['close'].ewm(span=9, adjust=False).mean()
     df['EMA_21'] = df['close'].ewm(span=21, adjust=False).mean()
     
@@ -76,7 +77,6 @@ def calcular_indicadores(df):
     return df
 
 def analizar_par(df, par):
-    """Evalúa múltiples estrategias técnicas y retorna la señal si supera el filtro."""
     if len(df) < 30:
         return None
 
@@ -87,31 +87,26 @@ def analizar_par(df, par):
     confirmaciones = 0
     estrategias_activas = []
     
-    # Estrategia 1: Cruce y Dirección de EMAs (Tendencia)
     if ultima_vela['EMA_9'] > ultima_vela['EMA_21']:
         confirmaciones += 1; estrategias_activas.append("Tendencia Alcista (EMA)")
     elif ultima_vela['EMA_9'] < ultima_vela['EMA_21']:
         confirmaciones += 1; estrategias_activas.append("Tendencia Bajista (EMA)")
         
-    # Estrategia 2: Sobrecompra / Sobreventa con RSI(14)
     if ultima_vela['RSI'] < 40:
         confirmaciones += 1; estrategias_activas.append("RSI en Sobreventa")
     elif ultima_vela['RSI'] > 60:
         confirmaciones += 1; estrategias_activas.append("RSI en Sobrecompra")
         
-    # Estrategia 3: Posición del Precio respecto a la EMA rápida
     if ultima_vela['close'] > ultima_vela['EMA_9']:
         confirmaciones += 1; estrategias_activas.append("Precio sobre EMA9")
     elif ultima_vela['close'] < ultima_vela['EMA_9']:
         confirmaciones += 1; estrategias_activas.append("Precio bajo EMA9")
         
-    # Estrategia 4: Acción del precio en vela previa (Momentum)
     if vela_anterior['close'] > vela_anterior['open']:
         confirmaciones += 1; estrategias_activas.append("Momentum Verde Previo")
     elif vela_anterior['close'] < vela_anterior['open']:
         confirmaciones += 1; estrategias_activas.append("Momentum Rojo Previo")
 
-    # Definir dirección general
     if ultima_vela['EMA_9'] > ultima_vela['EMA_21'] and ultima_vela['close'] > ultima_vela['EMA_9']:
         direccion = "COMPRA"
     elif ultima_vela['EMA_9'] < ultima_vela['EMA_21'] and ultima_vela['close'] < ultima_vela['EMA_9']:
@@ -119,14 +114,14 @@ def analizar_par(df, par):
     else:
         return None 
 
-    # Cálculo de fuerza de la señal (%)
     fuerza = 50.0
     if confirmaciones >= 3:
-        fuerza += (confirmaciones * 12.5) # Escala hasta 100% con 4 confirmaciones
+        fuerza += (confirmaciones * 12.5)
 
     if fuerza >= FUERZA_MINIMA and confirmaciones >= CONFIRMACIONES_MINIMAS:
         return {
             "par": par,
+            "timestamp": df.index[-1],
             "direccion": direccion,
             "fuerza": min(round(fuerza, 1), 100.0),
             "confirmaciones": f"{confirmaciones}/4",
@@ -139,7 +134,6 @@ def analizar_par(df, par):
 # BLOQUE 4: OBTENCIÓN DE DATOS (YAHOO FINANCE M5)
 # =====================================================================
 def obtener_datos_mercado(par):
-    """Obtiene datos reales de Yahoo Finance en M5."""
     try:
         ticker = f"{par}=X"
         df = yf.download(ticker, period="2d", interval="5m", progress=False)
@@ -157,27 +151,24 @@ def obtener_datos_mercado(par):
         return None
 
 # =====================================================================
-# BLOQUE 5: BUCLE PRINCIPAL CON ALERTA PREVENTIVA Y FILTROS
+# BLOQUE 5: BUCLE PRINCIPAL CON CONTROL DE DUPLICADOS POR VELA
 # =====================================================================
 def ejecutar_ciclo_trading():
-    global dia_actual_registro, contador_alertas_hoy
+    global dia_actual_registro, contador_alertas_hoy, ultimas_velas_oficiales, ultimas_velas_preventivas
     
     hora_utc = datetime.now(timezone.utc)
     zona_ve = timezone(timedelta(hours=-4))
     hora_ve = hora_utc.astimezone(zona_ve)
     
-    # Reiniciar contador diario si cambia el día
     if dia_actual_registro != hora_ve.date():
         dia_actual_registro = hora_ve.date()
         contador_alertas_hoy = 0
 
-    # Validar días de semana (Lunes=0 a Viernes=4)
     if hora_ve.weekday() > 4:
-        logging.info("💤 Fin de semana. El mercado de divisas está cerrado. Esperando a lunes...")
+        logging.info("💤 Fin de semana. El mercado de divisas está cerrado...")
         time.sleep(3600)
         return
 
-    # Validar horario operativo (06:00 a 11:00)
     if not (HORA_INICIO <= hora_ve.hour < HORA_FIN):
         logging.info(f"💤 Fuera de horario ({hora_ve.strftime('%H:%M')} VE). Activo de 06:00 a 11:00.")
         time.sleep(300) 
@@ -186,18 +177,22 @@ def ejecutar_ciclo_trading():
     minutos = hora_ve.minute
     segundos = hora_ve.second
     
-    # --- FASE 1: ALERTA PREVENTIVA (1 minuto antes del cierre de vela, ej: min 4, 9, 14...) ---
     minutos_en_bloque = minutos % 5
     segundos_en_bloque = (minutos_en_bloque * 60) + segundos
     
-    # Si estamos cerca del minuto 4 de cada bloque (a los 240 segundos)
+    # --- FASE 1: ALERTA PREVENTIVA (Minuto 4 del bloque M5) ---
     if 235 <= segundos_en_bloque <= 245:
-        logging.info("⚠️ Ejecutando escaneo preventivo (1 minuto para cierre de vela M5)...")
+        logging.info("⚠️️ Ejecutando escaneo preventivo (1 min para cierre de vela M5)...")
         for par in PARES_A_ANALIZAR:
             df = obtener_datos_mercado(par)
             if df is not None:
                 señal = analizar_par(df, par)
                 if señal:
+                    # Evitar repetir la alerta preventiva para la misma vela exacta
+                    if ultimas_velas_preventivas[par] == señal['timestamp']:
+                        continue
+                    
+                    ultimas_velas_preventivas[par] = señal['timestamp']
                     emoji = "🟢" if señal['direccion'] == "COMPRA" else "🔴"
                     msg_prev = (
                         f"⚠️ PREPARATE (1 MIN) -> {emoji} {señal['par']} {señal['direccion']}\n"
@@ -207,16 +202,10 @@ def ejecutar_ciclo_trading():
                     )
                     enviar_ntfy(msg_prev, titulo="Aviso Preventivo M5")
         
-        # Esperar a que pasen estos 10-15 segundos para no duplicar
         time.sleep(15)
         return
 
-    # --- FASE 2: ESCANEO Y SEÑAL DEFINITIVA (Al cierre exacto de la vela, múltiplos de 5) ---
-    minutos_faltantes = (5 - (minutos % 5)) % 5
-    segundos_totales = (minutos_faltantes * 60) - segundos
-    if segundos_totales <= 0:
-        segundos_totales = 5 # Breve pausa si estamos en el borde
-        
+    # --- FASE 2: SEÑAL OFICIAL (Al cierre exacto de la vela) ---
     logging.info(f"🔍 Escaneando mercado al cierre de vela M5...")
     for par in PARES_A_ANALIZAR:
         try:
@@ -227,6 +216,11 @@ def ejecutar_ciclo_trading():
             señal = analizar_par(df, par)
             
             if señal:
+                # Evitar repetir la alerta oficial para la misma vela exacta
+                if ultimas_velas_oficiales[par] == señal['timestamp']:
+                    continue
+                
+                ultimas_velas_oficiales[par] = señal['timestamp']
                 emoji = "🟢" if señal['direccion'] == "COMPRA" else "🔴"
                 mensaje = (
                     f"{emoji} {señal['par']} {señal['direccion']} | Fuerza {señal['fuerza']}%\n\n"
@@ -243,11 +237,10 @@ def ejecutar_ciclo_trading():
         except Exception as e:
             logging.error(f"Error analizando {par}: {e}")
 
-    # Pausa inteligente hasta el siguiente ciclo cercano
     time.sleep(30)
 
 if __name__ == "__main__":
-    logging.info("🤖 Iniciando Bot v36.5 - M5, Preventivo 1 min, 3+ Estrategias, Lunes-Viernes 6-11 AM")
+    logging.info("🤖 Iniciando Bot v36.6 - M5 con Control Anti-Spam por Vela")
     
     while True:
         try:
