@@ -7,18 +7,18 @@ import numpy as np
 import yfinance as yf
 
 # =====================================================================
-# BLOQUE 1: CONFIGURACIÓN PROFESIONAL M5
+# BLOQUE 1: CONFIGURACIÓN PROFESIONAL M5 (INTACTO)
 # =====================================================================
 
 NTFY_TOPIC = "hugo_bot_trading_2026"
-NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}"
+NTFY_URL = "https://ntfy.sh/" 
 
 PARES_A_ANALIZAR = ["USDJPY", "USDCAD", "EURUSD", "GBPJPY"]
 TEMPORALIDAD = "5m" 
 VENCIMIENTO = 5      
 FUERZA_MINIMA = 50.0  
 CONFIRMACIONES_MINIMAS = 3  
-MAX_ALERTAS_DIARIAS = 100   # Amplio margen de seguridad
+MAX_ALERTAS_DIARIAS = 100   
 
 # --- FILTRO DE HORARIO Y DÍAS (GMT-4, Venezuela) ---
 HORA_INICIO = 6   
@@ -36,19 +36,23 @@ ultimo_bloque_oficial = None
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def enviar_ntfy(mensaje, titulo="Alerta de Trading M5"):
-    """Envía una notificación consolidada a NTFY."""
+    """Envía una notificación consolidada a NTFY usando JSON."""
     global contador_alertas_hoy
     try:
         if contador_alertas_hoy >= MAX_ALERTAS_DIARIAS:
             logging.warning("⚠️ Límite diario de alertas alcanzado.")
             return False
 
-        headers = {
-            "Title": titulo,
-            "Priority": "high",
-            "Tags": "chart_with_upwards_trend"
+        # Usamos JSON para evitar problemas con emojis y formatos multilínea
+        payload = {
+            "topic": NTFY_TOPIC,
+            "message": mensaje,
+            "title": titulo,
+            "priority": 4,  # 4 = Alta prioridad en NTFY
+            "tags": ["chart_with_upwards_trend"]
         }
-        response = requests.post(NTFY_URL, data=mensaje.encode(encoding='utf-8'), headers=headers)
+        
+        response = requests.post(NTFY_URL, json=payload)
         
         if response.status_code == 429:
             logging.error("❌ Error NTFY: 429 - Límite de tasa excedido temporalmente.")
@@ -56,13 +60,14 @@ def enviar_ntfy(mensaje, titulo="Alerta de Trading M5"):
             
         response.raise_for_status()
         contador_alertas_hoy += 1
+        logging.info(f"✅ NTFY respondió: {response.text}") 
         return True
     except Exception as e:
         logging.error(f"❌ Error crítico en NTFY: {e}")
         return False
 
 # =====================================================================
-# BLOQUE 3: ESTRATEGIA TÉCNICA MULTI-INDICADOR
+# BLOQUE 3: ESTRATEGIA TÉCNICA MULTI-INDICADOR (INTACTO)
 # =====================================================================
 
 def calcular_indicadores(df):
@@ -198,6 +203,9 @@ def ejecutar_ciclo_trading():
                 emoji = "🟢" if s['direccion'] == "COMPRA" else "🔴"
                 msg += f"{emoji} {s['par']} {s['direccion']} | Fuerza: {s['fuerza']}%\n"
             
+            # NUEVO: Log para que veas el mensaje exacto en Railway
+            logging.info(f"\n📤 MENSAJE A ENVIAR:\n{msg}")
+            
             enviar_ntfy(msg, titulo="Prepararse M5")
             logging.info("🚀 Alerta preventiva consolidada enviada.")
         
@@ -230,6 +238,9 @@ def ejecutar_ciclo_trading():
                 msg += f"   🧠 Estrategias: {s['estrategias']}\n\n"
             
             msg += f"⏳ Vencimiento: {VENCIMIENTO} min. ¡ENTRA AHORA!"
+            
+            # NUEVO: Log para que veas el mensaje exacto en Railway
+            logging.info(f"\n📤 MENSAJE A ENVIAR:\n{msg}")
             
             if enviar_ntfy(msg, titulo=f"Señales M5 - Bloque {bloque_id}"):
                 logging.info("🚀 Alerta oficial consolidada enviada con éxito.")
